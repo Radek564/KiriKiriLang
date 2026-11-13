@@ -1,0 +1,135 @@
+// ==== speaker name and the multi-language redraw =======================
+// The render-mode message window (RenderMsgwinPlugin / MsgwinRender) draws
+// a page through MsgwinRender.start().  On a language change the page is
+// redrawn:  RenderMsgwinPlugin.onRedrawMessageText() clears the message
+// layer (which hides the name plate) and then re-renders only the text
+// elements.  The speaker name is not part of those elements in this engine
+// family -- the scenario delivers it through a separate "dispname" tag --
+// so the redraw never puts the name back and the plate stays hidden.
+//
+// The name that is on screen at that moment is the authoritative one: it
+// is what the player already sees for this page.  Remember it when the
+// window draws it, and replay it once the redraw has finished.  The
+// element that carried the name is kept as well, so the name follows the
+// active language when the element has per-language names.
+//
+// This is language-neutral and applies to every title of the family.
+
+global.__lpSpeakerName = "";
+global.__lpSpeakerElm = void;
+
+function __lpSpeakerText(value) {
+	try {
+		if (value === void) return "";
+		if (typeof value == "String") return value;
+		return "" + value;
+	} catch (e) {
+		return "";
+	}
+}
+
+function __lpRememberSpeaker(name, elm) {
+	var text = __lpSpeakerText(name);
+	if (text == "") return;
+	global.__lpSpeakerName = text;
+	global.__lpSpeakerElm = elm;
+	// The engine's own redraw looks the name up on the element.  When the
+	// element only knows the language that was active when it was built,
+	// that lookup is empty after a language change; keep a neutral copy.
+	try {
+		if (typeof elm == "Object" && elm) {
+			var current = "";
+			try { current = elm.disp; } catch (e) { current = ""; }
+			if (typeof current != "String" || current == "") elm.disp = text;
+		}
+	} catch (e) {
+	}
+}
+
+// kag.drawName(name, elm) is the single point where a displayed speaker
+// reaches the window: the "dispname" handler and the render plugin both
+// go through it.
+function __lpInstallSpeakerMemory() {
+	var kag = void;
+	try { kag = global.kag; } catch (e) { kag = void; }
+	if (typeof kag != "Object" || !kag) return false;
+	if (typeof kag.__lpOrigDrawName == "Object") return true;
+	var orig = void;
+	try { orig = kag.drawName; } catch (e) { orig = void; }
+	if (typeof orig != "Object") return false;
+	kag.__lpOrigDrawName = orig;
+	kag.drawName = function (name, elm, *) {
+		try { __lpRememberSpeaker(name, elm); } catch (e) { }
+		return this.__lpOrigDrawName(name, elm, *);
+	};
+	return true;
+}
+
+function __lpApplySpeaker(layer, name) {
+	var resolved = "";
+	var elm = global.__lpSpeakerElm;
+	try {
+		if (typeof elm == "Object" && elm && typeof global.kag == "Object")
+			resolved = __lpSpeakerText(global.kag.getLangInfo(elm, "disp"));
+	} catch (e) {
+		resolved = "";
+	}
+	if (resolved == "") resolved = name;
+	if (resolved == "") return;
+	// The same call the renderer makes while drawing a page: it stores the
+	// name on the layer and shows the plate (including the frame variant
+	// with the name area).
+	try { layer.processName(resolved, elm); } catch (e) { }
+	// The "with background" copy of the page carries the same name.
+	try {
+		var comp = layer.comp;
+		if (typeof comp == "Object" && comp && comp !== layer)
+			comp.processName(resolved, elm);
+	} catch (e) {
+	}
+}
+
+// The render-mode redraw hook itself.  The name is read *before* the
+// original hook clears the layer and replayed *after* it has re-rendered
+// the text.
+function __lpInstallRedrawFix() {
+	var cls = void;
+	try { cls = global.RenderMsgwinPlugin; } catch (e) { cls = void; }
+	if (typeof cls != "Object" || !cls) return false;
+	if (typeof cls.__lpOrigRedrawName == "Object") return true;
+	var orig = void;
+	try { orig = cls.onRedrawMessageText; } catch (e) { orig = void; }
+	if (typeof orig != "Object") return false;
+	cls.__lpOrigRedrawName = orig;
+	cls.onRedrawMessageText = function (layer, *) {
+		var name = "";
+		try {
+			var nl = layer.nameLayer;
+			if (typeof nl == "Object" && nl)
+				name = __lpSpeakerText(nl.currentName);
+		} catch (e) {
+			name = "";
+		}
+		var result = this.__lpOrigRedrawName(layer, *);
+		if (name != "") {
+			try { __lpApplySpeaker(layer, name); } catch (e) { }
+		}
+		return result;
+	};
+	return true;
+}
+
+function __lpInstallSpeakerFix() {
+	try { __lpInstallSpeakerMemory(); } catch (e) { }
+	try { __lpInstallRedrawFix(); } catch (e) { }
+	return true;
+}
+
+try { __lpInstallSpeakerFix(); } catch (e) { }
+// The multi-language module brings the renderer up after the window, so
+// the hook is installed again once everything is in place.
+try {
+	addAfterInitCallback(function () {
+		try { __lpInstallSpeakerFix(); } catch (e) { }
+	}, 4);
+} catch (e) { }

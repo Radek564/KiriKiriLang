@@ -1,0 +1,3 @@
+// ==== native renderer: load before the game customises its message layer ====
+try { KAGLoadScriptOnce("rendermsgwin.tjs"); }
+catch (e) { Debug.message("patch: rendermsgwin.tjs: " + e.message); }

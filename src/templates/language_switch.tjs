@@ -1,0 +1,61 @@
+// ==== language switch: repaint the line that is already on screen ====
+// The native CallLangChanged() only calls Current.action("onLangChanged")
+// and refreshes the menu marks.  Without a scene handler a menu click would
+// change kag.languageType but leave the current message and the visible
+// history in the old language until the next line.  Wrap the native setters
+// instead and redraw through the message layer's global helper.
+//
+// TJS does not close over the local variables of the installer function
+// when the wrapper is stored on ``global``; a shared ``orig`` local would
+// make every click raise "Member orig does not exist".  Keep one
+// saved-original global per setter and write each wrapper out explicitly.
+function __lpRefreshLanguageDisplay(reason) {
+	var kg = void;
+	try { kg = global.kag; } catch (e) { kg = void; }
+	if (typeof kg != "Object" || !kg) return;
+	if (reason != "ui") {
+		try {
+			if (typeof global.redrawMessageText == "Object")
+				global.redrawMessageText();
+		} catch (e) { }
+	}
+}
+
+try {
+	if (typeof global.SetLanguageType == "Object") {
+		global.__lpOrigSetLanguageType = global.SetLanguageType;
+		global.SetLanguageType = function () {
+			var r = global.__lpOrigSetLanguageType(...);
+			try { __lpRefreshLanguageDisplay("main"); } catch (e) { }
+			return r;
+		};
+	}
+} catch (e) { Debug.message("patch: wrap SetLanguageType: " + e.message); }
+
+try {
+	if (typeof global.SetSubLanguageType == "Object") {
+		global.__lpOrigSetSubLanguageType = global.SetSubLanguageType;
+		global.SetSubLanguageType = function () {
+			var r = global.__lpOrigSetSubLanguageType(...);
+			try { __lpRefreshLanguageDisplay("sub"); } catch (e) { }
+			return r;
+		};
+	}
+} catch (e) { Debug.message("patch: wrap SetSubLanguageType: " + e.message); }
+
+// Do NOT wrap SetUILanguageType: the engine attaches ``WithAskAndGoToTitle``
+// and an ``enabled`` getter to the function object, and a wrapper would strip
+// both.  The native setter already fires onUILangChanged; the caption and
+// checkmark refresh is done by ui_language_apply.tjs and the
+// onResetAllMenuLangText/onUILangChanged hooks in ui_language_menu.tjs.
+
+try {
+	if (typeof global.SwapMainSubLang == "Object") {
+		global.__lpOrigSwapMainSubLang = global.SwapMainSubLang;
+		global.SwapMainSubLang = function () {
+			var r = global.__lpOrigSwapMainSubLang(...);
+			try { __lpRefreshLanguageDisplay("swap"); } catch (e) { }
+			return r;
+		};
+	}
+} catch (e) { Debug.message("patch: wrap SwapMainSubLang: " + e.message); }

@@ -1,0 +1,55 @@
+// ==== language slot: render the patched column =======================
+// The plain message layer (MessageLayer/msghack) never reads d.language;
+// it only draws d.text/d.disp.  Copy the chosen column into those fields
+// so the slot is visible even when rendermsgwin is not loaded.
+var __patchLangTags = [ @TAGS@ ];
+try {
+	var __langOrigConvertSceneText = convertSceneText;
+	convertSceneText = function (entry, version) {
+		var d = __langOrigConvertSceneText(entry, version);
+		try {
+			if (d && d.language && d.language.count > 0) {
+				var idx = @INDEX@;
+				var sub = -1;
+				try {
+					// Follow the in-game selector once the player used it.
+					if (typeof kag == "Object") {
+						if (kag.scflags.languageType !== void
+						    && kag.languageType !== void)
+							idx = int(kag.languageType);
+						// The sub language is a live value: the title keeps it
+						// in the system config and reads it through
+						// ``kag.subLanguageType``.  The saved flag is only a
+						// fallback for a title that keeps it there.
+						if (kag.subLanguageType !== void)
+							sub = int(kag.subLanguageType);
+						else if (kag.scflags.subLanguageType !== void)
+							sub = int(kag.scflags.subLanguageType);
+					}
+				} catch (e) { }
+				if (idx < 0) idx = 0;
+				if (idx >= d.language.count) idx = d.language.count - 1;
+				var src = d.language[idx];
+				if (src) {
+					if (src.disp !== void && src.disp !== "") d.disp = src.disp;
+					if (src.text !== void && src.text !== "") d.text = src.text;
+					if (src.textlength !== void) d.textlength = src.textlength;
+					if (src.speechtext !== void) d.speechtext = src.speechtext;
+					if (src.searchtext !== void) d.searchtext = src.searchtext;
+				}
+				// Secondary column: the plain layer has one text field, so
+				// append the chosen sub language on its own line.
+				if (sub >= 0 && sub != idx && sub < d.language.count) {
+					var extra = d.language[sub];
+					if (extra) {
+						if (extra.text !== void && extra.text !== "")
+							d.text = (d.text ? d.text + "\n" : "") + extra.text;
+						if (extra.disp !== void && extra.disp !== "")
+							d.disp = (d.disp ? d.disp + "\n" : "") + extra.disp;
+					}
+				}
+			}
+		} catch (e) { }
+		return d;
+	};
+} catch (e) { Debug.message("patch: convertSceneText: " + e.message); }

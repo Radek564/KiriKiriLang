@@ -1,0 +1,222 @@
+
+// ==== language slot: assets that live in the patch archive ================
+// The patch archive carries the new language's interface files: its
+// ``syslangtext_<tag>.ini`` and its UI images.  Their *names* are unknown to
+// the game, so the game's own media cannot see them -- only the archive's
+// own path resolves:
+//
+//     <game>/patch.xp3>ui/syslangtext_<tag>.ini
+//
+// The engine finds such a file itself when the archive folder is registered
+// as an auto path.  When it cannot -- the archive layer of a title may not
+// be enumerable -- this module reads the INI straight from the archive and
+// merges it into SystemLanguageText, the very dictionary the engine's
+// LoadSysLangText() fills.  The captions, the language names and the
+// text-to-speech target language then behave exactly as if the game could
+// see the file.
+
+// Folder inside the patch archive that holds the new language's files.
+global.__lpLangAssetDir = @@ASSET_DIR@@;
+
+// State in one dictionary: reading an undefined member of ``global`` throws
+// in TJS, so every flag has to exist before it is read.
+global.__lpLangState = %[
+	hooked: false,
+	busy: false,
+	exists: void,
+	placed: void,
+	lookups: %[],
+];
+
+// The engine mounts "patch.xp3" and then every "patchN.xp3" that exists.
+// The newest archive is ours, so the lookup walks them from the newest to
+// the oldest and returns the first hit.
+function __lpLangArchives() {
+	var list = [];
+	for (var i = 1; i <= 16; i++) {
+		var name = (i == 1) ? "patch.xp3" : ("patch" + i + ".xp3");
+		var path = System.exePath + name;
+		var ok = false;
+		try { ok = Storages.isExistentStorage(path); } catch (e) { ok = false; }
+		if (ok) list.add(path);
+	}
+	return list;
+}
+
+// Archive path of a file below the asset folder, or "" when the patch does
+// not carry it.
+function __lpLangAssetPath(name) {
+	if (typeof name != "String" || name == "") return "";
+	if (global.__lpLangState.busy) return "";
+	global.__lpLangState.busy = true;
+	var result = "";
+	try {
+		var exists = global.__lpLangState.exists;
+		if (typeof exists != "Object" || exists === void)
+			exists = Storages.isExistentStorage;
+		var archives = __lpLangArchives();
+		for (var i = archives.count - 1; i >= 0; i--) {
+			var path = archives[i] + ">" + global.__lpLangAssetDir + name;
+			var ok = false;
+			try { ok = exists(path); } catch (e) { ok = false; }
+			if (ok) { result = path; break; }
+		}
+	} catch (e) {
+		result = "";
+	}
+	global.__lpLangState.busy = false;
+	return result;
+}
+
+// ---- syslangtext INI ---------------------------------------------------
+// The INI format is the engine's own: "key<blank>value" lines, grouped by
+// "!section <name>" headers, with "!ignore <key>" marking a key that has no
+// translation in this language.
+
+function __lpSysLangSplit(line) {
+	var n = line.length;
+	var i = 0;
+	while (i < n) {
+		var c = line.charAt(i);
+		if (c == " " || c == "\t") break;
+		i++;
+	}
+	if (i == 0) return void;
+	var key = line.substr(0, i);
+	while (i < n) {
+		var c2 = line.charAt(i);
+		if (c2 != " " && c2 != "\t") break;
+		i++;
+	}
+	// The engine splits the line on blank runs and joins the rest with a
+	// single space, so "a   b" becomes "a b".
+	var parts = [];
+	var cur = "";
+	for (; i < n; i++) {
+		var c3 = line.charAt(i);
+		if (c3 == " " || c3 == "\t") {
+			if (cur != "") { parts.add(cur); cur = ""; }
+		} else {
+			cur += c3;
+		}
+	}
+	if (cur != "") parts.add(cur);
+	return [key, parts.join(" ")];
+}
+
+function __lpSysLangDict(dict, key) {
+	var d = void;
+	try { d = dict[key]; } catch (e) { d = void; }
+	if (typeof d != "Object" || !d) {
+		d = new (global).Dictionary();
+		dict[key] = d;
+	}
+	return d;
+}
+
+// Merge one INI into SystemLanguageText, exactly like the engine's
+// ParseSysLangText() does.
+function __lpMergeSysLangText(tag, path) {
+	var dict = global.SystemLanguageText;
+	if (typeof dict != "Object" || !dict) return false;
+	var lines = void;
+	try {
+		lines = new (global).Array();
+		lines.load(path);
+	} catch (e) {
+		return false;
+	}
+	if (typeof lines != "Object" || !lines) return false;
+	var marks = __lpSysLangDict(dict, "#");
+	var section = void;
+	for (var i = 0; i < lines.count; i++) {
+		var raw = "";
+		try { raw = (string)lines[i]; } catch (e) { continue; }
+		var text = raw.trim();
+		if (text == "") continue;
+		if (text.charAt(0) == "#") continue;
+		if (text.charAt(0) == "!") {
+			var head = text.substr(1);
+			var sp = head.indexOf(" ");
+			var cmd = (sp < 0) ? head : head.substr(0, sp);
+			var rest = (sp < 0) ? "" : head.substr(sp + 1).trim();
+			cmd = cmd.toLowerCase();
+			if (cmd == "section") {
+				section = "!" + rest;
+				marks[section] = 1;
+				__lpSysLangDict(dict, section);
+			} else if (cmd == "ignore" || cmd == "optional") {
+				// No translation for this key in this language: the
+				// engine then falls back to the reference language.
+				var ign = __lpSysLangDict(dict, rest.toLowerCase());
+				ign[tag] = void;
+			}
+			continue;
+		}
+		var pair = __lpSysLangSplit(text);
+		if (!pair) continue;
+		var key = pair[0];
+		var value = pair[1];
+		var lower = key.toLowerCase();
+		marks[lower] = key;
+		if (section != void) {
+			var sec = __lpSysLangDict(dict, section);
+			sec[lower] = 1;
+		}
+		var entry = __lpSysLangDict(dict, lower);
+		entry[tag] = value;
+	}
+	return true;
+}
+
+// Load the interface INI of a language from the patch archive and merge it
+// into SystemLanguageText.
+function __lpLoadSysLangText(tag) {
+	if (typeof tag != "String" || tag == "") return false;
+	var path = __lpLangAssetPath("syslangtext_" + tag + ".ini");
+	if (path == "") return false;
+	var ok = false;
+	try { ok = __lpMergeSysLangText(tag, path); } catch (e) { ok = false; }
+	return ok;
+}
+
+// Merge every interface language the patch carries.  The engine loads the
+// INIs it can see itself; this adds the ones it cannot.
+function __lpLoadAllSysLangText() {
+	var tags = @@UI_TAGS@@;
+	for (var i = 0; i < tags.count; i++) {
+		var tag = tags[i];
+		if (typeof tag != "String" || tag == "") continue;
+		try { __lpLoadSysLangText(tag); } catch (e) { }
+	}
+}
+
+// Diagnostics helper: a no-op unless the diagnostics module is loaded.
+// The lookup wrappers below report what they resolved, so a missing
+// interface graphic can be traced.  The helper has to exist in every
+// build: without it the wrapper throws and the engine gives up on the
+// script that asked for the graphic.
+function __lpBridgeLog(text) {
+	try {
+		if (typeof global.__lpDiag == "Object") {
+			global.__lpDiag(text);
+			global.__lpDiagFlush();
+		}
+	} catch (e) { }
+}
+
+@@UI_LOOKUPS@@
+function __lpInstallUiLookups() {
+@@UI_LOOKUP_CALLS@@}
+
+try {
+	__lpLoadAllSysLangText();
+} catch (e) {
+	try { Debug.message("patch: language assets: " + e.message); } catch (e2) { }
+}
+
+try {
+	__lpInstallUiLookups();
+} catch (e) {
+	try { Debug.message("patch: language assets: " + e.message); } catch (e2) { }
+}

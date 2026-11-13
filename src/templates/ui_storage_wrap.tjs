@@ -1,0 +1,240 @@
+
+// ==== localised graphics that keep the original file name ===============
+// These titles do not have the GetUIImage()/GetUIFile() helpers the other
+// games of the family use, so the engine asks for the original graphic
+// everywhere: "title" for the interface PSD and "tx01a" for a scene layer.
+// The patch carries the translated copies beside them -- title_<tag>.pimg,
+// tx01a_<tag>.png -- and the *name* is the only thing that separates the two.
+//
+// Two loaders see every graphic that matters:
+//
+//   PSDInfo.loadImages             the interface PSD (title, menus, dialogs)
+//   EnvObjectWorld.updateImageSource  every scene/layer image
+//
+// Both are ordinary TJS functions, so they can be wrapped.  A name is
+// rewritten only when the active language has a variant and the patch
+// really carries it; every other name -- and every other language -- keeps
+// the original, so the base game is untouched.
+
+global.__lpImgVariantCache = %[];
+
+function __lpImgCallable(value) {
+	var t = typeof value;
+	return (t == "Object" || t == "Function");
+}
+
+// Language tag lists are indexed by the engine's language number.
+function __lpImgTagOf(index) {
+	var tags = void;
+	try { tags = global.LanguageTags; } catch (e) { tags = void; }
+	if (typeof tags == "Object" && tags && index >= 0 && index < tags.count) {
+		try { return string(tags[index]); } catch (e) { }
+	}
+	return "";
+}
+
+// Text language: the language the scenario is read in.
+function __lpImgTextTag() {
+	var tag = "";
+	try { tag = global.CurrentLanguageTag; } catch (e) { tag = ""; }
+	if (typeof tag == "String" && tag != "") return tag;
+	var index = -1;
+	try { index = int(global.kag.languageType); } catch (e) { index = -1; }
+	if (index < 0) {
+		try { index = int(global.kag.textLanguageType); } catch (e) { index = -1; }
+	}
+	return __lpImgTagOf(index);
+}
+
+// Interface language: the language the menus are drawn in.
+function __lpImgUiTag() {
+	var tag = "";
+	try { tag = global.CurrentLanguageUITag; } catch (e) { tag = ""; }
+	if (typeof tag == "String" && tag != "") return tag;
+	var index = -1;
+	try { index = int(global.SystemConfig.uiLanguageType); } catch (e) { index = -1; }
+	if (index < 0) {
+		try { index = int(global.kag.scflags.uiLanguageType); } catch (e) { index = -1; }
+	}
+	return __lpImgTagOf(index);
+}
+
+// A name the game itself can see, or -- when the patch archive's own folder
+// is not on the auto-path table -- the archive-qualified path of the same
+// file.  Both are valid storage names for the engine's loaders.
+function __lpImgResolve(name) {
+	var ok = false;
+	try { ok = Storages.isExistentStorage(name); } catch (e) { ok = false; }
+	if (ok) return name;
+	if (__lpImgCallable(global.__lpLangAssetPath)) {
+		try {
+			var path = global.__lpLangAssetPath(name);
+			if (typeof path == "String" && path != "") return path;
+		} catch (e) { }
+	}
+	return "";
+}
+
+// The translated name, or the original one when the patch has no variant.
+// The answer is cached: the scene image loader runs on every redraw, and a
+// storage lookup per frame would be wasteful.
+function __lpImgVariant(name, tag) {
+	if (typeof name != "String" || name == "") return name;
+	if (typeof tag != "String" || tag == "") return name;
+	if (tag == @@BASE_TAG@@) return name;
+	var key = tag + "\t" + name;
+	if (typeof global.__lpImgVariantCache[key] == "String")
+		return global.__lpImgVariantCache[key];
+	var out = name;
+	try {
+		var ext = "";
+		try { ext = Storages.extractStorageExt(name); } catch (e) { ext = ""; }
+		if (ext != "") {
+			// An explicit extension is kept; only the stem changes.
+			var stem = name;
+			try { stem = Storages.chopStorageExt(name); } catch (e) { stem = name; }
+			var file = stem + "_" + tag + ext;
+			var found = __lpImgResolve(file);
+			if (found != "") out = found;
+		} else {
+			// The engine resolves the extension itself, so the variant is
+			// returned without one when any of the usual extensions exists.
+			var bare = name + "_" + tag;
+			var hit = __lpImgResolve(bare);
+			if (hit != "") {
+				out = hit;
+			} else {
+				var exts = [ ".pimg", ".png", ".tlg", ".jpg", ".bmp" ];
+				for (var i = 0; i < exts.count; i++) {
+					hit = __lpImgResolve(bare + exts[i]);
+					if (hit == "")
+						hit = __lpImgResolve(bare + exts[i].toUpperCase());
+					if (hit != "") {
+						out = hit;
+						break;
+					}
+				}
+			}
+		}
+		if (out == name) {
+			// The engine also resolves bare names through its auto-path
+			// table, so a variant filed under the folder's own bare name is
+			// found even when the caller used a folder-qualified storage.
+			var slash = name.lastIndexOf("/");
+			if (slash >= 0 && slash < name.length - 1) {
+				var base = name.substr(slash + 1);
+				var alt = __lpImgVariant(base, tag);
+				if (alt != base) out = alt;
+			}
+		}
+	} catch (e) {
+		out = name;
+	}
+	global.__lpImgVariantCache[key] = out;
+	if (out != name) {
+		try {
+			if (__lpImgCallable(global.__lpBridgeLog))
+				global.__lpBridgeLog("patch: image variant " + name + " -> " + out);
+		} catch (e) { }
+	}
+	return out;
+}
+
+// A scene image request is either a name, a list of layer dictionaries or a
+// dictionary that carries the name in "file"/"storage".  Rewrite in place:
+// the caller keeps the object it already compares for change detection, and
+// the variant check is idempotent (name_<tag>_<tag> does not exist).
+function __lpImgRewrite(value, tag) {
+	if (typeof tag != "String" || tag == "" || tag == @@BASE_TAG@@) return value;
+	var t = typeof value;
+	if (t == "String") return __lpImgVariant(value, tag);
+	if (t != "Object" || !value) return value;
+	var isArray = false;
+	try { isArray = value instanceof "Array"; } catch (e) { isArray = false; }
+	if (isArray) {
+		try {
+			for (var i = 0; i < value.count; i++) {
+				var item = value[i];
+				var replaced = __lpImgRewrite(item, tag);
+				if (replaced !== item) value[i] = replaced;
+			}
+		} catch (e) { }
+		return value;
+	}
+	try {
+		if (typeof value.file == "String") {
+			var file = __lpImgVariant(value.file, tag);
+			if (file != value.file) value.file = file;
+		}
+	} catch (e) { }
+	try {
+		if (typeof value.storage == "String") {
+			var storage = __lpImgVariant(value.storage, tag);
+			if (storage != value.storage) value.storage = storage;
+		}
+	} catch (e) { }
+	try {
+		if (typeof value.imageFile == "Object" && value.imageFile)
+			value.imageFile = __lpImgRewrite(value.imageFile, tag);
+	} catch (e) { }
+	return value;
+}
+
+// ---- the interface PSD --------------------------------------------------
+function __lpImgInstallPsd() {
+	var cls = void;
+	try { cls = global.PSDInfo; } catch (e) { cls = void; }
+	if (typeof cls != "Object" || !cls) return false;
+	try {
+		if (typeof cls.__lpOrigLoadImages != "undefined") return true;
+		if (!__lpImgCallable(cls.loadImages)) return false;
+		cls.__lpOrigLoadImages = cls.loadImages;
+		cls.loadImages = function (storage, *) {
+			return (this.__lpOrigLoadImages incontextof this)(
+			    __lpImgVariant(storage, __lpImgUiTag()), *);
+		};
+		return true;
+	} catch (e) {
+		return false;
+	}
+}
+
+// ---- the scene layers ---------------------------------------------------
+// The graphic follows the *interface* language, exactly like the interface
+// PSD above: the title screen and the scene graphics are exchanged together
+// when the player switches the language, so a translated graphic never
+// stays on screen in another interface language.
+function __lpImgInstallWorld() {
+	var cls = void;
+	try { cls = global.EnvObjectWorld; } catch (e) { cls = void; }
+	if (typeof cls != "Object" || !cls) return false;
+	try {
+		if (typeof cls.__lpOrigUpdateImageSource != "undefined") return true;
+		if (!__lpImgCallable(cls.updateImageSource)) return false;
+		cls.__lpOrigUpdateImageSource = cls.updateImageSource;
+		cls.updateImageSource = function (target, imageFile, *) {
+			return (this.__lpOrigUpdateImageSource incontextof this)(
+			    target, __lpImgRewrite(imageFile, __lpImgUiTag()), *);
+		};
+		return true;
+	} catch (e) {
+		return false;
+	}
+}
+
+function __lpImgInstall() {
+	var ok = false;
+	try { if (__lpImgInstallPsd()) ok = true; } catch (e) { }
+	try { if (__lpImgInstallWorld()) ok = true; } catch (e) { }
+	return ok;
+}
+
+try { __lpImgInstall(); } catch (e) { }
+
+// Later scripts may replace the classes while the window is built; install
+// once more when everything is ready.
+try {
+	addAfterInitCallback(function () {
+		try { __lpImgInstall(); } catch (e) { }
+	}, 3);
+} catch (e) { }

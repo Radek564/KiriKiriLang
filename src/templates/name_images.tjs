@@ -1,0 +1,100 @@
+// ==== speaker names as text when the title uses name pictures ========
+// Some titles draw the speaker name as a picture: SystemConfig.nameImageMap
+// maps a speaker name to "nameimage_<name>".  The map is written for the
+// original language and a picture cannot be translated, so for the new text
+// language the name layer takes the engine's own text path -- exactly what
+// the other titles of this family do.
+//
+// The decision is taken while the plate is drawn, so a language switch needs
+// no state: the next draw picks the new path.
+//
+// The plate follows the language that is on screen.  ``kag.languageType`` is
+// the live choice; ``kag.textLanguageType`` is only refreshed when the next
+// line starts (system_MainWindow ``dispname``), so after a mid-line switch it
+// still names the previous language and would keep the old plate style.
+function __lpNameImageTag() {
+	var tags = void;
+	try { tags = global.LanguageTags; } catch (e) { tags = void; }
+	if (typeof tags != "Object" || !tags) return "";
+	var index = -1;
+	try { index = int(global.kag.languageType); } catch (e) { index = -1; }
+	if (index < 0 || index >= tags.count) {
+		try { index = int(global.kag.textLanguageType); } catch (e) { index = -1; }
+	}
+	if (index < 0 || index >= tags.count) return "";
+	return tags[index];
+}
+
+function __lpNameImagesText() {
+	return __lpNameImageTag() == @@TAG@@;
+}
+
+// The class the message layers use for the plate: titles with the message
+// skin replace NameLayer with CustomNameLayer.  TJS2 functions do not capture
+// locals, so the originals are kept on the class and read through `this`.
+function __lpNameLayerClass() {
+	try {
+		var skin = global.CustomNameLayer;
+		if (typeof skin == "Object" && skin &&
+		    typeof skin.processNameImage == "Object") return skin;
+	} catch (e) { }
+	try {
+		var base = global.NameLayer;
+		if (typeof base == "Object" && base &&
+		    typeof base.processNameImage == "Object") return base;
+	} catch (e) { }
+	return void;
+}
+
+function __lpNameImageTextWrapper(arg0) {
+	try {
+		if (__lpNameImagesText()) return this.processNameText(arg0);
+	} catch (e) { }
+	return (this.__lpOrigProcessNameImage incontextof this)(arg0);
+}
+
+function __lpNameImageFileWrapper(arg0) {
+	try {
+		if (__lpNameImagesText()) return void;
+	} catch (e) { }
+	return (this.__lpOrigGetNameImageFile incontextof this)(arg0);
+}
+
+function __lpInstallNameImages() {
+	var cls = __lpNameLayerClass();
+	if (typeof cls != "Object" || !cls) return false;
+	var wrapped = false;
+	try {
+		if (typeof cls.__lpOrigProcessNameImage == "undefined" &&
+		    typeof cls.processNameImage == "Object") {
+			cls.__lpOrigProcessNameImage = cls.processNameImage;
+			cls.processNameImage = __lpNameImageTextWrapper;
+			wrapped = true;
+		}
+	} catch (e) { }
+	try {
+		if (typeof cls.__lpOrigGetNameImageFile == "undefined" &&
+		    typeof cls.getNameImageFile == "Object") {
+			cls.__lpOrigGetNameImageFile = cls.getNameImageFile;
+			cls.getNameImageFile = __lpNameImageFileWrapper;
+			wrapped = true;
+		}
+	} catch (e) { }
+	return wrapped;
+}
+
+// The language menu calls this after a switch.  The plate is redrawn by the
+// name hooks, so only the current decision is reported back.
+function __lpApplyNameImages() {
+	try { return __lpNameImagesText(); } catch (e) { }
+	return false;
+}
+
+global.__lpApplyNameImages = __lpApplyNameImages;
+
+try { __lpInstallNameImages(); } catch (e) { }
+try {
+	addAfterInitCallback(function () {
+		try { __lpInstallNameImages(); } catch (e) { }
+	}, 3);
+} catch (e) { }

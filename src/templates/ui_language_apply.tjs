@@ -1,0 +1,509 @@
+
+// ==== universal UI language apply / reload ==========================
+// A UI language change has three effects that the native setters do not
+// all perform:
+//
+//   1. SystemConfig.uiLanguageType changes, so GetUIPSD()/GetUIFile()
+//      resolve the new *_<tag>.pimg / *_<tag>.png assets.
+//   2. The menu bar captions and the radio checkmark must be refreshed.
+//      The native SetUILanguageType() only rewrites item.origCaption;
+//      updateLangMenuCheck() is what reformats item.caption, and it reads
+//      kag.scflags.uiLanguageType (a different field), so the checkmark
+//      and captions stay stale unless both are written and the helper is
+//      called explicitly.
+//   3. The current scene has to be reloaded.  The title (and every UI
+//      panel) caches uiloadParse results and built layers; changing the
+//      language alone does not exchange the graphics on screen.
+//
+// The native SetUILanguageType.WithAskAndGoToTitle() does 1 and 3 but
+// is gated by an ``enabled`` getter (only true while the start anchor is
+// current) and does not update scflags.  This helper is the language-
+// neutral equivalent: it never depends on the title-specific helper and
+// falls back gracefully when the game has no native multilang module.
+function __lpUISysText(key, dflt) {
+	var v = void;
+	try { v = global.GetSysLangText(key, global.CurrentLanguageUITag); }
+	catch (e) { v = void; }
+	if (typeof v == "String" && v != "") return v;
+	return dflt;
+}
+
+function __lpUIGroupLabel(group) {
+	if (group == 0) return __lpUISysText("textLanguageMenuItem", "Main");
+	if (group == 1) return __lpUISysText("subLanguageMenuItem", "Sub");
+	return __lpUISysText("uiLanguageMenuItem", "UI");
+}
+
+// Only the language radio items carry the [Main]/[Sub]/[UI] prefix; every
+// other caption is the raw INI value.
+function __lpUIItemPrefix(name) {
+	if (name.indexOf("textLanguageMenuItem_") == 0)
+		return "[" + __lpUIGroupLabel(0) + "] ";
+	if (name.indexOf("subLanguageMenuItem_") == 0)
+		return "[" + __lpUIGroupLabel(1) + "] ";
+	if (name.indexOf("uiLanguageMenuItem_") == 0)
+		return "[" + __lpUIGroupLabel(2) + "] ";
+	return "";
+}
+
+// Expand the ``${w}``/``${h}``/``${amp}`` placeholders used by menu-bar
+// captions.  The native updateLangMenuCheck() does this for the three language
+// groups with a small context dictionary; the top-level entries need the
+// same treatment or the caption would show the literal ``${w}`` text.
+function __lpUIInline(text) {
+	if (typeof text != "String" || text == "") return text;
+	if (text.indexOf("${") < 0 && text.indexOf("&") < 0) return text;
+	var ctx = %[];
+	var k = void;
+	try { k = global.kag; } catch (e) { k = void; }
+	if (typeof k == "Object" && k) {
+		var w = 0, h = 0;
+		try {
+			w = int(k.pxWidth * k.zoomNumer / k.zoomDenom);
+			h = int(k.pxHeight * k.zoomNumer / k.zoomDenom);
+		} catch (e) { w = 0; h = 0; }
+		if (!w) { try { w = int(k.scWidth); } catch (e) { } }
+		if (!h) { try { h = int(k.scHeight); } catch (e) { } }
+		ctx.w = w;
+		ctx.h = h;
+	}
+	ctx.amp = "&";
+	try { ctx.tag = global.CurrentLanguageUITag; } catch (e) { }
+	try {
+		if (typeof global.applyInlineStringVariableExtract == "Object")
+			return global.applyInlineStringVariableExtract(text, ctx);
+	} catch (e) { }
+	try {
+		if (typeof global.SystemConfig.applyInlineStringVariableExtract == "Object")
+			return global.SystemConfig.applyInlineStringVariableExtract(text, ctx);
+	} catch (e) { }
+	return text;
+}
+
+// The parser stores every ``!section menu`` entry as name -> caption.
+// ResetAllMenuLangText only touches origCaption (when it exists), so walk
+// the same table and write the visible caption as well.  This also covers
+// the top-level menu-bar entries (systemMenu, displayMenu, ...) which the
+// native reset leaves untouched on titles that define origCaption lazily.
+function __lpUIRefreshCaptions() {
+	var k = void;
+	try { k = global.kag; } catch (e) { k = void; }
+	if (typeof k != "Object" || !k) return false;
+	var dict = void;
+	try { dict = global.SystemLanguageText["!menu"]; } catch (e) { dict = void; }
+	if (typeof dict != "Object" || !dict) return false;
+	try {
+		dict.foreach(function (name, value) {
+			if (typeof name != "String" || name == "") return;
+			if (name.charAt(0) == ":") return; // sysarg entries are not menu items
+			var itemName = name;
+			try {
+				var mapped = global.SystemLanguageText["#" + name];
+				if (typeof mapped == "String" && mapped != "") itemName = mapped;
+			} catch (e) { }
+			var item = void;
+			try { item = k[itemName]; } catch (e) { item = void; }
+			if (typeof item != "Object" || !item) return;
+			var text = __lpUISysText(name, value);
+			if (typeof text != "String" || text == "") text = value;
+			if (typeof text != "String") return;
+			var isLang = (name.indexOf("textLanguageMenuItem_") == 0
+				|| name.indexOf("subLanguageMenuItem_") == 0
+				|| name.indexOf("uiLanguageMenuItem_") == 0);
+			// Keep the native ResetAllMenuLangText/updateLangMenuCheck
+			// machinery working after this explicit refresh.
+			try { item.origCaption = text; } catch (e) { }
+			if (isLang) {
+				// The native updateLangMenuCheck() reformats these from
+				// origCaption with multiLangMenuCapsFmt.  If the title has
+				// no such helper, fall back to the simple prefixed label.
+				try {
+					if (typeof global.updateLangMenuCheck != "Object")
+						item.caption = __lpUIItemPrefix(name) + text;
+				} catch (e) { }
+				return;
+			}
+			var cap = __lpUIInline(text);
+			try { item.caption = cap; } catch (e) { }
+		});
+	} catch (e) { }
+	return true;
+}
+
+function __lpUIRefreshCheck(index) {
+	var k = void;
+	try { k = global.kag; } catch (e) { k = void; }
+	if (typeof k != "Object" || !k) return;
+	var tags = void;
+	try { tags = global.LanguageTags; } catch (e) { tags = void; }
+	if (typeof tags != "Object" || !tags) return;
+	for (var i = 0; i < tags.count; i++) {
+		var item = void;
+		try { item = k["uiLanguageMenuItem_" + tags[i]]; } catch (e) { item = void; }
+		if (typeof item == "Object" && item) item.checked = (i == index);
+	}
+}
+
+// Reload the scene that is on screen so uiloadParse/GetUIPSD rebuild the
+// interface with the new tag.  At the title the start anchor is current,
+// so goToStart() intentionally returns immediately; the engine's own
+// "reload scenario" handler (used by the debug menu) saves the current
+// bookmark and reloads it, which is exactly what a title refresh needs.
+// In-game we return to the title instead, matching the native behaviour.
+function __lpUIReloadForUI() {
+	var k = void;
+	try { k = global.kag; } catch (e) { k = void; }
+	if (typeof k != "Object" || !k) return false;
+	var atAnchor = false;
+	try { atAnchor = !!k.startAnchorEnabled; } catch (e) { atAnchor = false; }
+	if (atAnchor) {
+		try {
+			if (typeof k.onReloadScenarioMenuItemClick == "Object") {
+				k.onReloadScenarioMenuItemClick();
+				return true;
+			}
+		} catch (e) { }
+		// No reload handler: force the anchor bookmark to load even
+		// though we are already at it.
+		try {
+			k.startAnchorEnabled = false;
+			try { k.goToStart(); } catch (e2) { }
+			return true;
+		} catch (e) { }
+	}
+	try { k.goToStart(); return true; } catch (e) { }
+	try {
+		if (typeof k.onReloadScenarioMenuItemClick == "Object") {
+			k.onReloadScenarioMenuItemClick();
+			return true;
+		}
+	} catch (e) { }
+	return false;
+}
+
+// The window title is part of the interface: it is a language text
+// ("TitleCaption"), so it has to follow the interface language.  The games
+// ship a helper for it; when it is missing, the caption is set directly.
+//
+// The engine's helper writes the window caption (kag.caption) only when
+// the window object is handed in, so always pass the window.
+//
+// GetSysLangText takes the *tag* as its second argument, not a default
+// text; the current interface language is used when it is left out.
+function __lpWriteTitleCaption() {
+	var done = false;
+	try {
+		if (typeof global.UpdateMultiLangTitleCaption == "Object") {
+			try {
+				global.UpdateMultiLangTitleCaption(global.kag);
+			} catch (e) {
+				global.UpdateMultiLangTitleCaption();
+			}
+			done = true;
+		}
+	} catch (e) { }
+	if (done) return true;
+	var text = "";
+	try { text = global.GetSysLangText("TitleCaption"); }
+	catch (e) { text = ""; }
+	if (typeof text != "String" || text == "") {
+		try { text = global.GetSystemLangMessage("TitleCaption", ""); }
+		catch (e) { text = ""; }
+	}
+	if (typeof text != "String" || text == "") return false;
+	try { global.System.title = text; } catch (e) { }
+	try { global.kag.caption = text; } catch (e) { }
+	return true;
+}
+
+function __lpUpdateTitleCaption() {
+	return __lpWriteTitleCaption();
+}
+
+// The games' own setter only records the choice in SystemConfig.  The saved
+// system flags (kag.scflags) still hold the language the game started with,
+// and a title reload restores that value, so the caption snaps back.  Wrap
+// the plain setter -- the one without the native confirmation member -- so
+// every caller (our menu, the config screen, a script) persists the choice.
+function __lpSetUILanguageType(index) {
+	var applied = false;
+	var value = int(index);
+	// The native setter only records the choice in SystemConfig; the
+	// saved system flags (kag.scflags) still hold the language the game
+	// started with.  Everything that rebuilds the interface reads the
+	// saved language, so it has to be updated *before* the setter runs -
+	// otherwise the window caption is rebuilt with the language from
+	// before and the title bar flashes the old language.
+	try { global.SystemConfig.uiLanguageType = value; } catch (e) { }
+	try { global.kag.scflags.uiLanguageType = value; } catch (e) { }
+	try {
+		global.__lpOldSetUILanguageType(index);
+		applied = true;
+	} catch (e) { applied = false; }
+	try { global.SystemConfig.uiLanguageType = value; } catch (e) { }
+	try { global.kag.scflags.uiLanguageType = value; } catch (e) { }
+	try { __lpUpdateTitleCaption(); } catch (e) { }
+	return applied;
+}
+
+function __lpWrapSetUILanguageType() {
+	if (global.__lpSetUILanguageTypeWrapped) return;
+	var orig = void;
+	try { orig = global.SetUILanguageType; } catch (e) { return; }
+	if (typeof orig != "Object") return;
+	// A title that ships the confirming member owns the whole flow;
+	// persists the choice itself and must not be wrapped.
+	try {
+		if (typeof orig.WithAskAndGoToTitle == "Object") return;
+	} catch (e) { }
+	global.__lpOldSetUILanguageType = orig;
+	global.SetUILanguageType = __lpSetUILanguageType;
+	global.__lpSetUILanguageTypeWrapped = true;
+}
+
+// ==== the message face of the new language ==========================
+// The map of the message faces is shared by every language: a title that
+// picks a face for its chinese interface writes that face into *every*
+// language, and the new language's text is then drawn in a face that does
+// not fit it -- the speaker name, drawn in the default face, no longer
+// matches the text.  The new language keeps the default message face.
+function __lpRestoreMessageFace() {
+	try {
+		var map = global.MessageDefaultFontFaceMap;
+		if (!map) return false;
+		// Make sure the new language has an entry at all: without one the
+		// engine falls back to lang_* (MS Shell Dlg 2 on a system without
+		// that font).  The base language's face is the reference.
+		try {
+			if (typeof global.__lpTagFaces == "Object") global.__lpTagFaces();
+		} catch (e) { }
+		// The face the plate was pinned to is the new language's message
+		// face.  Using it here keeps the text and the speaker name in the
+		// same face even after the title rewrote the map for a different
+		// interface language.
+		var face = "";
+		try {
+			if (typeof global.__lpNameFace == "String") face = global.__lpNameFace;
+		} catch (e) { face = ""; }
+		if (face == "") face = global.MessageDefaultFontFace;
+		if (typeof face != "String" || face == "") return false;
+		// Never write the system fallback back into the map: it would
+		// pin the text and the plate to MS Gothic.
+		var low = face.toLowerCase();
+		if (low == "ms shell dlg 2" || low.indexOf("ms shell dlg") == 0 ||
+		    low == "*" || low == "lang_*")
+			return false;
+		map[@@TAG@@] = face;
+		return true;
+	} catch (e) { }
+	return false;
+}
+
+global.__lpRestoreMessageFace = __lpRestoreMessageFace;
+
+// ==== the interface face of the new language =========================
+// A title that picks the interface face per language keeps the face of
+// the previous language when the new language has none of its own: a
+// face that fits one language does not fit the other, and the message
+// text is then drawn in a face the speaker name does not use.  The faces
+// the title starts with are restored for the new language.
+global.__lpDtpPristine = void;
+
+function __lpDtpFaces() {
+	var out = %[];
+	try {
+		var table = global.SystemConfig.drawTextParamMapTable;
+		if (!table) return out;
+		table.foreach(function (key, entry) {
+			if (entry && typeof entry == "Object" && entry.fontface)
+				out[key] = entry.fontface;
+		});
+	} catch (e) { }
+	return out;
+}
+
+// The faces of the title as they are before any language was chosen.
+function __lpRememberDtpFaces() {
+	if (global.__lpDtpPristine) return;
+	try { global.__lpDtpPristine = __lpDtpFaces(); } catch (e) { }
+}
+
+function __lpRestoreDtpFaces() {
+	try {
+		var pristine = global.__lpDtpPristine;
+		if (!pristine) return false;
+		var table = global.SystemConfig.drawTextParamMapTable;
+		if (!table) return false;
+		var changed = 0;
+		pristine.foreach(function (key, face) {
+			var entry = void;
+			try { entry = table[key]; } catch (e) { entry = void; }
+			if (!entry || typeof entry != "Object") return;
+			if (entry.fontface != face) {
+				entry.fontface = face;
+				changed++;
+			}
+		});
+		if (changed) {
+			// The engine caches the computed draw parameters; the cached
+			// ones still hold the old face.
+			try {
+				var cache = global.FilterDrawTextParam.GetDrawTextParam.local;
+				if (typeof cache == "Object") cache.cache = void;
+			} catch (e2) { }
+		}
+		return changed > 0;
+	} catch (e) { }
+	return false;
+}
+
+global.__lpDtpFaces = __lpDtpFaces;
+global.__lpRememberDtpFaces = __lpRememberDtpFaces;
+global.__lpRestoreDtpFaces = __lpRestoreDtpFaces;
+
+// The faces of the title are read before any language is chosen.
+try { __lpRememberDtpFaces(); } catch (e) { }
+
+// The title changes its interface face in its own hook for
+// "onUILangChanged"; this one runs after it and puts the new language's
+// message face back.
+try {
+	addKagHookCallback("onUILangChanged", function () {
+		try { __lpRestoreMessageFace(); } catch (e) { }
+	});
+} catch (e) { }
+
+function __lpApplyUILanguage(index, restart) {
+	var k = void;
+	try { k = global.kag; } catch (e) { k = void; }
+	if (typeof k != "Object" || !k) return false;
+	index = int(index);
+	var tags = void;
+	try { tags = global.LanguageTags; } catch (e) { tags = void; }
+	if (typeof tags == "Object" && tags && (index < 0 || index >= tags.count))
+		return false;
+
+	var old = -1;
+	try { old = int(global.SystemConfig.uiLanguageType); } catch (e) { old = -1; }
+
+	// Prefer the game's own setter: it updates SystemConfig, resets the
+	// native menu text, refreshes the window title and fires the
+	// onUILangChanged hooks (which clear the UI cache).
+	var applied = false;
+	try {
+		if (typeof global.SetUILanguageType == "Object") {
+			global.SetUILanguageType(index);
+			applied = true;
+		}
+	} catch (e) { applied = false; }
+	if (!applied) {
+		try { global.SystemConfig.uiLanguageType = index; } catch (e) { }
+		try {
+			if (typeof tags == "Object" && tags)
+				global.CurrentLanguageUITag = tags[index];
+		} catch (e) { }
+		try { k.callHook("onUILangChanged", old, index); } catch (e) { }
+	}
+
+	// The window title follows the interface language.  The game's own
+	// helper does it for the titles that ship one; the others get the
+	// caption from the language table.
+	try { __lpUpdateTitleCaption(); } catch (e) { }
+
+	// The title may have written its own face into the shared message
+	// face map; the new language keeps the default one.
+	try { __lpRestoreMessageFace(); } catch (e) { }
+
+	// The player picked a language in this session: from now on the live
+	// SystemConfig value wins over the flags restored at startup.
+	global.__lpUiLanguageChanged = true;
+
+	// updateLangMenuCheck() reads scflags, not SystemConfig.  Write both
+	// so the radio mark and the formatted captions agree immediately.
+	try { k.scflags.uiLanguageType = index; } catch (e) { }
+	try { global.SystemConfig.uiLanguageType = index; } catch (e) { }
+
+	try { __lpUIRefreshCaptions(); } catch (e) { }
+	try {
+		if (typeof global.updateLangMenuCheck == "Object")
+			global.updateLangMenuCheck();
+	} catch (e) { }
+	try { __lpUIRefreshCheck(index); } catch (e) { }
+
+	if (restart !== false) {
+		// The title reload reads the system save data back (datasc.ksd
+		// holds SystemConfig), so an in-memory change alone is undone and
+		// the caption snaps back to the startup language.  Persist first;
+		// this is what the config screen does, which is why its path
+		// already worked.
+		try { k.saveSystemVariables(); } catch (e) { }
+		try { __lpUIReloadForUI(); } catch (e) { }
+		// The reload runs the title scenario, which may restore the system
+		// flags saved when the game started.  The player's choice wins.
+		try { k.scflags.uiLanguageType = index; } catch (e) { }
+		try { global.SystemConfig.uiLanguageType = index; } catch (e) { }
+		try { __lpUpdateTitleCaption(); } catch (e) { }
+	}
+	return true;
+}
+
+global.__lpApplyUILanguage = __lpApplyUILanguage;
+global.__lpUpdateTitleCaption = __lpUpdateTitleCaption;
+global.__lpWrapSetUILanguageType = __lpWrapSetUILanguageType;
+
+// multilang.tjs may not be loaded yet when this block runs; the after-init
+// callback installs the wrapper again for the titles that load it later.
+try { __lpWrapSetUILanguageType(); } catch (e) { }
+
+// First window: reconcile the two language fields.  The native module
+// restores scflags.uiLanguageType from the system save data, while the
+// window title / GetUIPSD() read SystemConfig.uiLanguageType.  Keep the
+// saved choice and make the visible state match it without restarting.
+try {
+	addAfterInitCallback(function () {
+		try {
+			var k = void;
+			try { k = global.kag; } catch (e) { k = void; }
+			if (typeof k != "Object" || !k) return;
+			// multilang.tjs is loaded by the game body, so the plain setter
+			// exists by the time the first init callback runs.
+			try { __lpWrapSetUILanguageType(); } catch (e) { }
+			var tags = void;
+			try { tags = global.LanguageTags; } catch (e) { tags = void; }
+			if (typeof tags != "Object" || !tags || tags.count < 1) return;
+			var ui = -1;
+			// After the player changed the language, the live value in
+			// SystemConfig is the truth; the saved flags still hold the
+			// language the game started with.
+			if (global.__lpUiLanguageChanged) {
+				try { ui = int(global.SystemConfig.uiLanguageType); }
+				catch (e) { ui = -1; }
+			}
+			if (ui != ui || ui < 0 || ui >= tags.count) {
+				try { ui = int(k.scflags.uiLanguageType); } catch (e) { ui = -1; }
+			}
+			if (ui != ui || ui < 0 || ui >= tags.count) {
+				try { ui = int(global.SystemConfig.uiLanguageType); }
+				catch (e) { ui = 0; }
+			}
+			if (ui != ui || ui < 0 || ui >= tags.count) ui = 0;
+			try { k.scflags.uiLanguageType = ui; } catch (e) { }
+			try { global.SystemConfig.uiLanguageType = ui; } catch (e) { }
+			// The scenario that just loaded may have set the caption from
+			// the flags it restored; put the chosen language back on it.
+			try { __lpUpdateTitleCaption(); } catch (e) { }
+			// Titles with the native syslangtext machinery own the menu
+			// captions: ResetAllMenuLangText reads the selected INI and
+			// the game's own hook adds the group prefixes.  Only the
+			// generic injected-menu path needs the manual refresh.
+			if (typeof global.ResetAllMenuLangText != "Object") {
+				try { __lpUIRefreshCaptions(); } catch (e) { }
+			}
+			try {
+				if (typeof global.updateLangMenuCheck == "Object")
+					global.updateLangMenuCheck();
+			} catch (e) { }
+			try { __lpUIRefreshCheck(ui); } catch (e) { }
+		} catch (e) { }
+	}, 1);
+} catch (e) { }

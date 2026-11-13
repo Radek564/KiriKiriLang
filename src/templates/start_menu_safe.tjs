@@ -1,0 +1,67 @@
+
+// ==== safe "Show Start Menu" launcher ==============================
+// The stock handler passes a possibly-void value to getLocalName()
+// and shellExecute(); both natives convert to String and throw.  This
+// wrapper resolves the path defensively and tries both signatures.
+function __lpStartText(key, dflt) {
+	var v = void;
+	try { v = global.GetSysLangText(key, global.CurrentLanguageUITag); }
+	catch (e) { v = void; }
+	if (typeof v == "String" && v != "") return v;
+	return dflt;
+}
+
+function __lpStartLaunch(cmd) {
+	// Stock KAG calls the one-argument form and treats a truthy result
+	// as success.  The two-argument form exists in some builds; try it
+	// only when the first call throws.
+	try { if (System.shellExecute(cmd)) return true; } catch (e) { }
+	try { if (System.shellExecute(cmd, "")) return true; } catch (e) { }
+	return false;
+}
+
+function __lpShowStartMenu() {
+	var msg = "ゲームを終了して開始メニューを表示します";
+	try {
+		var m = global.GetSystemConfigItem("BootStrapKickConfirm", msg);
+		if (typeof m == "String" && m != "") msg = m;
+	} catch (e) { }
+	var yes = false;
+	try {
+		var title = "";
+		try { title = System.title; } catch (e2) { title = ""; }
+		if (typeof title != "String") title = "";
+		yes = System.confirm(msg, title, kag);
+	} catch (e) { yes = false; }
+	if (!yes) return;
+	var path = System.exePath + "BootStrap.exe";
+	var local = path;
+	try {
+		var n = Storages.getLocalName(path);
+		if (typeof n == "String" && n != "") local = n;
+	} catch (e) { }
+	var cmd = '"' + local + '"';
+	if (__lpStartLaunch(cmd)) {
+		try { kag.askOnClose = 0; } catch (e) { }
+		try { kag.close(); } catch (e) { }
+		return;
+	}
+	try {
+		System.inform(__lpStartText("BootStrapKickFailed",
+			"開始メニューの起動に失敗しました"));
+	} catch (e) { }
+}
+
+function __lpPatchStartMenu() {
+	var item = void;
+	try { item = kag.helpBootStrapMenuItem; } catch (e) { item = void; }
+	if (typeof item != "Object" || !item) return false;
+	try { item.command = "__lpShowStartMenu()"; } catch (e) { return false; }
+	return true;
+}
+
+try {
+	addAfterInitCallback(function () {
+		try { __lpPatchStartMenu(); } catch (e) { }
+	});
+} catch (e) { }

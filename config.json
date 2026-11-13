@@ -1,0 +1,46 @@
+{
+  "default_profile": "",
+  "test_dir": "",
+  "stage_to_test": false,
+  "extract_dir": "extracted",
+  "extract_exclude": [
+    "patch"
+  ],
+  "language": {
+    "tag": "xx",
+    "name": "target",
+    "label": "&Target",
+    "index": 2,
+    "multilang": true,
+    "font_size": 30
+  },
+  "paths": {
+    "scn_dir": "scn_overrides",
+    "build_dir": "build",
+    "workbook": "text_export.xlsx",
+    "cache_dir": "cache/psb",
+    "extract_output": "extracted",
+    "loader": "loader",
+    "filemap": "filemap.json",
+    "assets_dir": "assets",
+    "assets_work": "assets_work",
+    "assets_workbook": "assets_export.xlsx"
+  },
+  "assets": {
+    "dirs": [],
+    "extensions": [
+      ".pimg",
+      ".png",
+      ".jpg",
+      ".jpeg",
+      ".webp",
+      ".bmp"
+    ],
+    "seed_flat": true,
+    "seed_untagged": [],
+    "by_size": null
+  },
+  "build": {
+    "assets_in_patch": false
+  }
+}

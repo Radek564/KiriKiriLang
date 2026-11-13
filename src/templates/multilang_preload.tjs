@@ -1,0 +1,17 @@
+// ==== language slot: activate the engine's multilingual subsystem ====
+// Load the KAG multilingual modules before the game customises its
+// message layer (rendermsgwin must come first).
+try { KAGLoadScriptOnce("rendermsgwin.tjs"); }
+catch (e) { Debug.message("patch: rendermsgwin.tjs: " + e.message); }
+try { KAGLoadScriptOnce("syslangtext.tjs"); }
+catch (e) { Debug.message("patch: syslangtext.tjs: " + e.message); }
+try { KAGLoadScriptOnce("multilang.tjs"); }
+catch (e) { Debug.message("patch: multilang.tjs: " + e.message); }
+
+// Select the patched variant after kag exists (multilang registers its
+// own callback first, so this one wins).
+try {
+	addAfterInitCallback(function (isMain) {
+		try { kag.languageType = @@INDEX@@; } catch (e) { }
+	});
+} catch (e) { Debug.message("patch: language select: " + e.message); }

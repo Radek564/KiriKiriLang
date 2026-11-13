@@ -1,0 +1,76 @@
+
+// ==== dialog captions ====================================================
+// The engine shows its message boxes with a caption that is hard-coded in
+// C++ ("Information", "Confirmation"), so no language file can change it:
+// the text never reaches the game.  ``System`` is an extendable native
+// class, so the two entry points can be wrapped and the caption taken from
+// the language table instead.
+//
+// The keys are the engine's own: ``DialogInformation`` and
+// ``DialogConfirmation``.  A language that does not know them keeps the
+// engine's wording, so the original game behaves exactly as before.
+//
+// TJS2 has no closures: the original methods have to live in a global,
+// otherwise the wrapper cannot see them.
+global.__lpOldInform = false;
+global.__lpOldConfirm = false;
+
+function __lpDialogCaption(key, fallback) {
+	// GetSysLangText takes the *tag* as its second argument; the current
+	// interface language is used when it is left out.
+	var caption = "";
+	try { caption = global.GetSysLangText(key); }
+	catch (e) { caption = ""; }
+	if (typeof caption != "String" || caption == "") {
+		try { caption = global.GetSystemLangMessage(key, ""); }
+		catch (e) { caption = ""; }
+	}
+	if (typeof caption != "String" || caption == "") caption = fallback;
+	return caption;
+}
+
+function __lpInstallDialogCaptions() {
+	var sys = global.System;
+	if (typeof sys != "Object" || !sys) return false;
+	try {
+		if (sys.__lpDialogCaptions) return true;
+	} catch (e) { }
+	var oldInform = false;
+	var oldConfirm = false;
+	try { oldInform = sys.inform; } catch (e) { oldInform = false; }
+	try { oldConfirm = sys.confirm; } catch (e) { oldConfirm = false; }
+	if (typeof oldInform != "Object" && typeof oldInform != "Function") {
+		oldInform = false;
+	}
+	if (typeof oldConfirm != "Object" && typeof oldConfirm != "Function") {
+		oldConfirm = false;
+	}
+	global.__lpOldInform = oldInform;
+	global.__lpOldConfirm = oldConfirm;
+	try {
+		if (oldInform) {
+			sys.inform = function (text, caption) {
+				var c = __lpDialogCaption("DialogInformation", "Information");
+				if (typeof caption != "String" || caption == "") caption = c;
+				return global.__lpOldInform(text, caption);
+			};
+		}
+		if (oldConfirm) {
+			sys.confirm = function (text, caption) {
+				var c = __lpDialogCaption("DialogConfirmation", "Confirmation");
+				if (typeof caption != "String" || caption == "") caption = c;
+				return global.__lpOldConfirm(text, caption);
+			};
+		}
+		sys.__lpDialogCaptions = true;
+		return true;
+	} catch (e) {
+		// An engine that does not allow the replacement keeps its own
+		// caption; nothing else breaks.
+		return false;
+	}
+}
+
+try {
+	__lpInstallDialogCaptions();
+} catch (e) { }

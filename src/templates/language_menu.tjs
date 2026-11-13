@@ -1,0 +1,796 @@
+// ==== language slot: self-contained selector (standard layout) =======
+// A title without multilang.tjs has no language menu and no syslangtext
+// tables.  Everything is emitted here: the per-UI-language captions (built
+// from syslangtext_<tag>.ini) and a walker that localises the whole menu bar
+// by item name.  Nothing below assumes a particular language tag.
+global.LanguageTags = [ @TAGS@ ];
+if (typeof global.CurrentLanguageUITag != "String"
+    || global.CurrentLanguageUITag == "")
+	global.CurrentLanguageUITag = @DEFAULT_UI_TAG@;
+
+var __lpMTags = [ @TAGS@ ];
+var __lpMLabels = [ @LABELS@ ];
+var __lpMGroupNames = [ @GROUPS@ ];
+var __lpMMenuTitle = @TITLE@;
+var __lpMNone = @NONE@;
+var __lpMSwap = @SWAP@;
+var __lpMDefaultTag = @DEFAULT_UI_TAG@;
+var __lpMMenuText = @CAPTIONS@;
+var __lpMMenuKeys = [ @MENU_KEYS@ ];
+var __lpMOrig = %[];
+
+// ---- caption lookup ------------------------------------------------
+function __lpMTable(tag) {
+	var t = void;
+	try { t = __lpMMenuText[tag]; } catch (e) { t = void; }
+	if (typeof t == "Object" && t) return t;
+	return void;
+}
+
+function __lpMText(key, dflt) {
+	var v = void;
+	var t = __lpMTable(global.CurrentLanguageUITag);
+	if (t) {
+		try { v = t[key]; } catch (e) { v = void; }
+		if (typeof v == "String" && v != "") return v;
+	}
+	t = __lpMTable(__lpMDefaultTag);
+	if (t) {
+		try { v = t[key]; } catch (e) { v = void; }
+		if (typeof v == "String" && v != "") return v;
+	}
+	return dflt;
+}
+
+function __lpMGroupLabel(g) {
+	var keys = [ "textLanguageMenuItem", "subLanguageMenuItem",
+	             "uiLanguageMenuItem" ];
+	return __lpMText(keys[g], __lpMGroupNames[g]);
+}
+
+function __lpMStripAccel(label) {
+	if (typeof label != "String") return "";
+	var p = label.indexOf("&");
+	if (p < 0) return label;
+	return label.substr(0, p) + label.substr(p + 1);
+}
+
+function __lpMLabelIndex(tag) {
+	for (var i = 0; i < __lpMTags.count; i++) {
+		if (__lpMTags[i] == tag) return i;
+	}
+	return -1;
+}
+
+function __lpMRawLabel(g, tag) {
+	var prefixes = [ "textLanguageMenuItem_", "subLanguageMenuItem_",
+	                 "uiLanguageMenuItem_" ];
+	var i = __lpMLabelIndex(tag);
+	var fallback = (i >= 0 && i < __lpMLabels.count) ? __lpMLabels[i] : tag;
+	if (g != 0) fallback = __lpMStripAccel(fallback);
+	return __lpMText(prefixes[g] + tag, fallback);
+}
+
+function __lpMFormat(g, text) {
+	return "[" + __lpMGroupLabel(g) + "] " + text;
+}
+
+function __lpMConfig(key, dflt) {
+	var v = void;
+	try { v = global.SystemConfig[key]; } catch (e) { v = void; }
+	if (typeof v == "String" && v != "") return v;
+	return dflt;
+}
+
+// ---- shortcut assignment ------------------------------------------
+// MenuItem.shortcut is a Win32 accelerator ("E", "Shift+E"); non-ASCII keys
+// are dropped by the native setter, so every assigned key is A-Z/0-9.  The
+// rest of the menu bar already uses most letters, and a duplicate makes the
+// other item fire instead, so reserve every existing key first.
+function __lpMIsAsciiAlnum(ch) {
+	if (typeof ch != "String" || ch.length != 1) return false;
+	var alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+	return alphabet.indexOf(ch.toUpperCase()) >= 0;
+}
+
+function __lpMNormKey(sc) {
+	if (typeof sc != "String") return "";
+	return sc.toUpperCase().split(" ").join("");
+}
+
+function __lpMKeyUsed(used, sc) {
+	var k = __lpMNormKey(sc);
+	if (k == "") return false;
+	return used[k] == true;
+}
+
+function __lpMReserveKey(used, sc) {
+	var k = __lpMNormKey(sc);
+	if (k != "") used[k] = true;
+	return sc;
+}
+
+function __lpMCollectShortcuts(item, used, skip) {
+	if (typeof item != "Object" || !item) return;
+	var ch = void;
+	try { ch = item.children; } catch (e) { ch = void; }
+	if (typeof ch != "Object" || !ch) return;
+	var n = 0;
+	try { n = ch.count; } catch (e) { n = 0; }
+	for (var i = 0; i < n; i++) {
+		var c = void;
+		try { c = ch[i]; } catch (e) { c = void; }
+		if (typeof c != "Object" || !c) continue;
+		if (skip && c == skip) continue;
+		var sc = "";
+		try { sc = c.shortcut; } catch (e) { sc = ""; }
+		if (typeof sc == "String" && sc != "") __lpMReserveKey(used, sc);
+		try {
+			var cap = c.caption;
+			if (typeof cap == "String") {
+				var p = cap.indexOf("&");
+				if (p >= 0 && p + 1 < cap.length) {
+					var a = cap.charAt(p + 1);
+					if (__lpMIsAsciiAlnum(a)) __lpMReserveKey(used, a);
+				}
+			}
+		} catch (e) { }
+		__lpMCollectShortcuts(c, used, skip);
+	}
+}
+
+function __lpMAddKeyCandidate(out, seen, ch) {
+	if (typeof ch != "String" || ch.length != 1) return;
+	ch = ch.toUpperCase();
+	if (!__lpMIsAsciiAlnum(ch)) return;
+	if (seen[ch]) return;
+	seen[ch] = true;
+	out.add(ch);
+}
+
+function __lpMKeyCandidates(label, tag) {
+	var out = [];
+	var seen = %[];
+	var i, ch;
+	if (typeof label == "String") {
+		var p = label.indexOf("&");
+		if (p >= 0 && p + 1 < label.length)
+			__lpMAddKeyCandidate(out, seen, label.charAt(p + 1));
+		var plain = __lpMStripAccel(label).toUpperCase();
+		for (i = 0; i < plain.length; i++)
+			__lpMAddKeyCandidate(out, seen, plain.charAt(i));
+	}
+	if (typeof tag == "String") {
+		var tg = tag.toUpperCase();
+		for (i = 0; i < tg.length; i++)
+			__lpMAddKeyCandidate(out, seen, tg.charAt(i));
+	}
+	var all = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+	for (i = 0; i < all.length; i++)
+		__lpMAddKeyCandidate(out, seen, all.charAt(i));
+	return out;
+}
+
+function __lpMPickFirst(used, cands, mods) {
+	for (var m = 0; m < mods.count; m++) {
+		for (var i = 0; i < cands.count; i++) {
+			var sc = mods[m] + cands[i];
+			if (!__lpMKeyUsed(used, sc))
+				return __lpMReserveKey(used, sc);
+		}
+	}
+	return "";
+}
+
+// Main is a bare letter and Sub is Shift+letter (the usual semantics), so pick a
+// letter whose bare *and* shifted forms are both free.
+function __lpMPickLangBase(used, label, tag) {
+	var cands = __lpMKeyCandidates(label, tag);
+	for (var i = 0; i < cands.count; i++) {
+		var c = cands[i];
+		if (!__lpMKeyUsed(used, c)
+		    && !__lpMKeyUsed(used, "Shift+" + c)) {
+			__lpMReserveKey(used, c);
+			__lpMReserveKey(used, "Shift+" + c);
+			return %[ base: c, sub: "Shift+" + c ];
+		}
+	}
+	for (i = 0; i < cands.count; i++) {
+		c = cands[i];
+		if (__lpMKeyUsed(used, c)) continue;
+		__lpMReserveKey(used, c);
+		var sub = __lpMPickFirst(used, [ c ], [ "Shift+", "Alt+", "Ctrl+" ]);
+		return %[ base: c, sub: sub ];
+	}
+	return %[ base: "", sub: "" ];
+}
+
+function __lpMComputeBases(kag) {
+	var used = %[];
+	var skip = void;
+	try { skip = kag.textLanguageMenu; } catch (e) { skip = void; }
+	try { __lpMCollectShortcuts(kag.menu, used, skip); } catch (e) { }
+	var bases = %[];
+	for (var i = 0; i < __lpMTags.count; i++) {
+		var tag = __lpMTags[i];
+		bases[tag] = __lpMPickLangBase(used, __lpMRawLabel(0, tag), tag);
+	}
+	return bases;
+}
+
+// ---- menu construction --------------------------------------------
+function __lpMApplyProps(item, spec) {
+	var sc = void, vis = void;
+	try { sc = spec.shortcut; } catch (e) { sc = void; }
+	try { vis = spec.visible; } catch (e) { vis = void; }
+	if (typeof sc == "String") {
+		try { if (item.shortcut != sc) item.shortcut = sc; } catch (e) { }
+	}
+	if (vis !== void) {
+		try { item.visible = (vis != 0); } catch (e) { }
+	}
+}
+
+function __lpMApplyItem(item, spec) {
+	try { if (item.caption != spec.caption) item.caption = spec.caption; } catch (e) { }
+	try { if (item.command != spec.exp) item.command = spec.exp; } catch (e) { }
+	__lpMApplyProps(item, spec);
+}
+
+function __lpMFindChild(kag, ch, name) {
+	var item = void;
+	try { item = kag[name]; } catch (e) { item = void; }
+	if (typeof item != "Object" || !item) return void;
+	for (var i = 0; i < ch.count; i++) {
+		if (ch[i] == item) return item;
+	}
+	return void;
+}
+
+function __lpMMakeItem(kag, parent, spec) {
+	var caption = spec.caption;
+	var group = 0;
+	try { group = int(spec.group); } catch (e) { group = 0; }
+	var item = void;
+	// A Dictionary with ``exp`` is what createMenuFromList passes; the
+	// explicit empty clickse keeps KAGMenuItem from treating the expression
+	// as a sound storage name.
+	var expd = %[ exp: spec.exp, clickse: "" ];
+	try {
+		item = new KAGMenuItem(kag, caption, group, expd, 0);
+	} catch (e) {
+		// MenuItem's first argument is the owning KAGWindow, not the parent
+		// menu item (stock Menus.tjs passes ``this`` there).
+		try { item = new MenuItem(kag, caption); } catch (e2) { return void; }
+	}
+	try {
+		if (spec.name != void && spec.name != "") kag[spec.name] = item;
+	} catch (e) { }
+	try { parent.add(item); } catch (e) { }
+	__lpMApplyProps(item, spec);
+	return item;
+}
+
+function __lpMLangSpecs(kag, used, bases) {
+	var out = [];
+	var i, tag, info;
+	for (i = 0; i < __lpMTags.count; i++) {
+		tag = __lpMTags[i];
+		info = bases[tag];
+		out.add(%[
+			name: "textLanguageMenuItem_" + tag,
+			caption: __lpMFormat(0, __lpMRawLabel(0, tag)),
+			group: 1,
+			// Menu expressions run through Scripts.eval in its own context,
+			// so the handler must be reached through ``global``.
+			exp: "global.PatchSetLanguageType(" + i + ")",
+			shortcut: (typeof info == "Object" && info) ? info.base : ""
+		]);
+	}
+	out.add("-");
+	for (i = 0; i < __lpMTags.count; i++) {
+		tag = __lpMTags[i];
+		info = bases[tag];
+		out.add(%[
+			name: "subLanguageMenuItem_" + tag,
+			caption: __lpMFormat(1, __lpMRawLabel(1, tag)),
+			group: 2,
+			exp: "global.PatchSetSubLanguageType(" + i + ")",
+			shortcut: (typeof info == "Object" && info) ? info.sub : ""
+		]);
+	}
+	var noneText = __lpMText("subLanguageMenuItem_none", __lpMNone);
+	var nonePref = __lpMConfig("multiLangSubLangOffShortCut", "Shift+N");
+	var noneKey = "";
+	if (nonePref != "" && !__lpMKeyUsed(used, nonePref))
+		noneKey = __lpMReserveKey(used, nonePref);
+	else
+		noneKey = __lpMPickFirst(used, __lpMKeyCandidates(noneText, "none"),
+			[ "Shift+", "Alt+", "Ctrl+", "" ]);
+	out.add(%[
+		name: "subLanguageMenuItem_none",
+		caption: __lpMFormat(1, noneText),
+		group: 2,
+		exp: "global.PatchSetSubLanguageType(-1)",
+		shortcut: noneKey,
+		visible: 1
+	]);
+	out.add("-");
+	var swapText = __lpMText("swapMainSubLangMenuItem", __lpMSwap);
+	var swapPref = __lpMConfig("multiLangSwapMainSubShortCut", "X");
+	var swapKey = "";
+	if (swapPref != "" && !__lpMKeyUsed(used, swapPref))
+		swapKey = __lpMReserveKey(used, swapPref);
+	else
+		swapKey = __lpMPickFirst(used, __lpMKeyCandidates(swapText, "swap"),
+			[ "", "Shift+", "Alt+", "Ctrl+" ]);
+	out.add(%[
+		name: "swapMainSubLangMenuItem",
+		caption: swapText,
+		exp: "global.PatchSwapMainSubLang()",
+		shortcut: swapKey,
+		visible: 1
+	]);
+	if (@WITH_UI@) {
+		out.add("-");
+		for (i = 0; i < __lpMTags.count; i++) {
+			tag = __lpMTags[i];
+			out.add(%[
+				name: "uiLanguageMenuItem_" + tag,
+				caption: __lpMFormat(2, __lpMRawLabel(2, tag)),
+				group: 3,
+				exp: "global.PatchSetUILanguageType(" + i + ")"
+			]);
+		}
+	}
+	return out;
+}
+
+function __lpMRefreshPseudo(kag) {
+	try {
+		if (typeof kag.makePseudoMenuTable != "Object") return;
+		var ps = false;
+		try { ps = kag.pseudoFullScreened; } catch (e) { ps = false; }
+		if (ps) {
+			try {
+				kag._pseudoFullScreen.shortcut =
+					kag.makePseudoMenuTable(kag.menu);
+			} catch (e) { }
+		}
+		var hid = void;
+		try { hid = kag.menuBarHidePseudoShortcut; } catch (e) { hid = void; }
+		if (hid !== void) {
+			try {
+				kag.menuBarHidePseudoShortcut =
+					kag.makePseudoMenuTable(kag.menu);
+			} catch (e) { }
+		}
+	} catch (e) { }
+}
+
+function __lpMSync(kag) {
+	var parent = kag.textLanguageMenu;
+	if (typeof parent != "Object" || !parent) return false;
+	try {
+		var cap = __lpMText("textLanguageMenu", __lpMMenuTitle);
+		if (parent.caption != cap) parent.caption = cap;
+	} catch (e) { }
+	var ch = parent.children;
+	if (typeof ch != "Object" || !ch) return false;
+	var used = %[];
+	var bases = __lpMComputeBases(kag);
+	var specs = __lpMLangSpecs(kag, used, bases);
+	if (typeof specs != "Object" || !specs || specs.count < 1) return false;
+	// Separators carry no name and no accelerator, so reuse them positionally.
+	var seps = [];
+	for (var s = 0; s < ch.count; s++) {
+		var scap = void;
+		try { scap = ch[s].caption; } catch (e) { scap = void; }
+		if (typeof scap == "String" && scap == "-") seps.add(ch[s]);
+	}
+	var order = [];
+	for (var i = 0; i < specs.count; i++) {
+		var spec = specs[i];
+		if (typeof spec == "String") {
+			var sep = void;
+			if (seps.count > 0) { sep = seps[0]; seps.erase(0); }
+			else {
+				// Stock separators are plain MenuItems owned by the KAGWindow.
+				try { sep = new MenuItem(kag, "-"); } catch (e) { sep = void; }
+			}
+			if (sep) order.add(sep);
+			continue;
+		}
+		var name = void;
+		try { name = spec.name; } catch (e) { name = void; }
+		if (typeof name != "String" || name == "") continue;
+		var item = __lpMFindChild(kag, ch, name);
+		if (typeof item == "Object" && item) {
+			__lpMApplyItem(item, spec);
+		} else {
+			item = __lpMMakeItem(kag, parent, spec);
+			// It was attached by __lpMMakeItem; detach so the re-add below
+			// does not leave a duplicate.
+			try { parent.remove(item); } catch (e) { }
+		}
+		if (typeof item == "Object" && item) order.add(item);
+	}
+	if (order.count < 1) return false;
+	for (var j = ch.count - 1; j >= 0; j--) {
+		try { parent.remove(ch[j]); } catch (e) { }
+	}
+	for (var k = 0; k < order.count; k++) {
+		try { parent.add(order[k]); } catch (e) { }
+	}
+	__lpMRefreshPseudo(kag);
+	return true;
+}
+
+function __lpMCreate(kag) {
+	var parent = __lpMMakeItem(kag, kag.menu, %[
+		name: "textLanguageMenu",
+		caption: __lpMText("textLanguageMenu", __lpMMenuTitle),
+		group: 0,
+		exp: ""
+	]);
+	if (!parent) return void;
+	var used = %[];
+	var bases = __lpMComputeBases(kag);
+	var specs = __lpMLangSpecs(kag, used, bases);
+	for (var i = 0; i < specs.count; i++) {
+		var spec = specs[i];
+		if (typeof spec == "String") {
+			try { parent.add(new MenuItem(kag, "-")); } catch (e) { }
+		} else {
+			__lpMMakeItem(kag, parent, spec);
+		}
+	}
+	// The language menu goes after the display menu.
+	try {
+		var ch = kag.menu.children;
+		var pos = -1, dpos = -1;
+		for (var j = 0; j < ch.count; j++) {
+			if (ch[j] == parent) pos = j;
+			try { if (ch[j] == kag.displayMenu) dpos = j; } catch (e) { }
+		}
+		if (pos >= 0 && dpos >= 0 && dpos + 1 != pos) {
+			try { kag.menu.remove(parent); } catch (e) { }
+			try { kag.menu.insert(parent, dpos + 1); } catch (e) { }
+		}
+	} catch (e) { }
+	__lpMRefreshPseudo(kag);
+	return parent;
+}
+
+// ---- menu-bar localisation ----------------------------------------
+function __lpMInTree(item, target) {
+	if (typeof item != "Object" || !item) return false;
+	var ch = void;
+	try { ch = item.children; } catch (e) { ch = void; }
+	if (typeof ch != "Object" || !ch) return false;
+	for (var i = 0; i < ch.count; i++) {
+		if (ch[i] == target) return true;
+		if (__lpMInTree(ch[i], target)) return true;
+	}
+	return false;
+}
+
+function __lpMLocalizeValue(item, gname, gval, key, cap) {
+	var ch = void;
+	try { ch = item.children; } catch (e) { ch = void; }
+	if (typeof ch != "Object" || !ch) return;
+	for (var i = 0; i < ch.count; i++) {
+		var c = ch[i];
+		var g = void, v = void;
+		try { g = c.group; } catch (e) { g = void; }
+		try { v = c.value; } catch (e) { v = void; }
+		if (g == gname && v == gval) {
+			var orig = void;
+			try { orig = __lpMOrig[key]; } catch (e) { orig = void; }
+			if (orig === void || orig === void) {
+				try { orig = c.caption; } catch (e) { orig = ""; }
+				__lpMOrig[key] = orig;
+			}
+			var text = cap;
+			if (typeof text != "String" || text == "") text = orig;
+			try { if (c.caption != text) c.caption = text; } catch (e) { }
+			try { c.origCaption = text; } catch (e) { }
+		}
+		__lpMLocalizeValue(c, gname, gval, key, cap);
+	}
+}
+
+function __lpMLocalizeMenuBar(kag) {
+	var k = __lpMCtx(kag);
+	if (!k) return;
+	var t = __lpMTable(global.CurrentLanguageUITag);
+	var d = __lpMTable(__lpMDefaultTag);
+	for (var i = 0; i < __lpMMenuKeys.count; i++) {
+		var name = __lpMMenuKeys[i];
+		if (typeof name != "String" || name == "") continue;
+		var cap = void;
+		if (t) { try { cap = t[name]; } catch (e) { cap = void; } }
+		if (typeof cap != "String" || cap == "") {
+			if (d) { try { cap = d[name]; } catch (e) { cap = void; } }
+		}
+		if (name.charAt(0) == ":") {
+			var eq = name.indexOf("=");
+			if (eq > 1)
+				__lpMLocalizeValue(k.menu, name.substr(1, eq - 1),
+					name.substr(eq + 1), name, cap);
+			continue;
+		}
+		var item = void;
+		try { item = k[name]; } catch (e) { item = void; }
+		if (typeof item != "Object" || !item) continue;
+		if (!__lpMInTree(k.menu, item)) continue;
+		var orig = void;
+		try { orig = __lpMOrig[name]; } catch (e) { orig = void; }
+		if (orig === void || orig === void) {
+			try { orig = item.caption; } catch (e) { orig = ""; }
+			__lpMOrig[name] = orig;
+		}
+		var text = cap;
+		if (typeof text != "String" || text == "") text = orig;
+		try { if (item.caption != text) item.caption = text; } catch (e) { }
+		try { item.origCaption = text; } catch (e) { }
+	}
+}
+
+// ---- state --------------------------------------------------------
+function __lpMCtx(ctx) {
+	if (typeof ctx == "Object" && ctx !== void) return ctx;
+	if (typeof kag == "Object") return kag;
+	return void;
+}
+
+function __lpMUIIndex(k) {
+	var idx = @DEFAULT_UI@;
+	try {
+		if (k && k.scflags !== void && k.scflags.uiLanguageType !== void)
+			idx = int(k.scflags.uiLanguageType);
+	} catch (e) { }
+	if (idx < 0 || idx >= __lpMTags.count) idx = @DEFAULT_UI@;
+	return idx;
+}
+
+function __lpMUpdateCheck(kag) {
+	var k = __lpMCtx(kag);
+	if (!k) return;
+	try {
+		var main = -1, sub = -1, ui = __lpMUIIndex(k);
+		if (k.languageType !== void) main = int(k.languageType);
+		if (k.scflags !== void && k.scflags.subLanguageType !== void)
+			sub = int(k.scflags.subLanguageType);
+		for (var i = 0; i < __lpMTags.count; i++) {
+			var tag = __lpMTags[i];
+			var item = void;
+			try { item = k["textLanguageMenuItem_" + tag]; } catch (e) { item = void; }
+			if (typeof item == "Object" && item) item.checked = (i == main);
+			item = void;
+			try { item = k["subLanguageMenuItem_" + tag]; } catch (e) { item = void; }
+			if (typeof item == "Object" && item) item.checked = (i == sub);
+			item = void;
+			try { item = k["uiLanguageMenuItem_" + tag]; } catch (e) { item = void; }
+			if (typeof item == "Object" && item) item.checked = (i == ui);
+		}
+		var none = void;
+		try { none = k.subLanguageMenuItem_none; } catch (e) { none = void; }
+		if (typeof none == "Object" && none) none.checked = (sub < 0);
+		var swap = void;
+		try { swap = k.swapMainSubLangMenuItem; } catch (e) { swap = void; }
+		if (typeof swap == "Object" && swap)
+			swap.enabled = (sub >= 0 && sub != main);
+	} catch (e) { }
+}
+
+function __lpMRefresh(kag) {
+	var k = __lpMCtx(kag);
+	if (!k) return;
+	try { global.CurrentLanguageUITag = __lpMTags[__lpMUIIndex(k)]; } catch (e) { }
+	try { __lpMSync(k); } catch (e) { }
+	__lpMLocalizeMenuBar(k);
+	__lpMUpdateCheck(k);
+}
+
+function PatchSetLanguageType(n) {
+	try {
+		n = int(n);
+		kag.languageType = n;
+		try { kag.textLanguageType = n; } catch (e) { }
+		try { kag.scflags.languageType = n; } catch (e) { }
+		try { __lpSyncSubLanguage(); } catch (e) { }
+		__lpMUpdateCheck(kag);
+		try {
+			if (typeof global.__lpApplyNameImages == "Object")
+				global.__lpApplyNameImages();
+		} catch (e) { }
+	} catch (e) { Debug.message("patch: set language: " + e.message); }
+}
+
+function PatchSetSubLanguageType(n) {
+	try {
+		kag.scflags.subLanguageType = int(n);
+		try { __lpSyncSubLanguage(); } catch (e) { }
+		__lpMUpdateCheck(kag);
+	} catch (e) { Debug.message("patch: set sub language: " + e.message); }
+}
+
+function PatchSetUILanguageType(n) {
+	try {
+		n = int(n);
+		// Shared apply helper: native setter when present, caption +
+		// checkmark refresh, and a title/scene reload so the UI graphics
+		// are rebuilt for the new tag.
+		if (typeof __lpApplyUILanguage == "Object") {
+			// Apply first (no reload), let the injected menu rebuild its
+			// own captions, then reload the scene for the new graphics.
+			__lpApplyUILanguage(n, false);
+			try { __lpMRefresh(kag); } catch (e) { }
+			try { __lpUIReloadForUI(); } catch (e) { }
+			return;
+		}
+		kag.scflags.uiLanguageType = n;
+		global.CurrentLanguageUITag = __lpMTags[n];
+		__lpMRefresh(kag);
+	} catch (e) { Debug.message("patch: set UI language: " + e.message); }
+}
+
+function PatchSwapMainSubLang() {
+	try {
+		var main = int(kag.languageType);
+		var sub = int(kag.scflags.subLanguageType);
+		if (sub < 0) return;
+		kag.languageType = sub;
+		kag.scflags.languageType = sub;
+		try { kag.textLanguageType = sub; } catch (e) { }
+		kag.scflags.subLanguageType = main;
+		try { __lpSyncSubLanguage(); } catch (e) { }
+		__lpMUpdateCheck(kag);
+		try {
+			if (typeof global.__lpApplyNameImages == "Object")
+				global.__lpApplyNameImages();
+		} catch (e) { }
+	} catch (e) { Debug.message("patch: swap language: " + e.message); }
+}
+
+// Menu expressions are evaluated by Scripts.eval in a fresh script context,
+// where top-level helpers are not visible.  Publish the click handlers on the
+// global object and address them as ``global.Patch...`` in every menu item.
+global.PatchSetLanguageType = PatchSetLanguageType;
+global.PatchSetSubLanguageType = PatchSetSubLanguageType;
+global.PatchSetUILanguageType = PatchSetUILanguageType;
+global.PatchSwapMainSubLang = PatchSwapMainSubLang;
+
+// Restore the persisted choice.  ``scflags`` is saved as a whole, so the two
+// extra keys survive a restart; the main language must be copied back into
+// ``kag.languageType`` because that is what the text wrapper reads.
+function PatchRestoreLanguageState(kag) {
+	var kg = __lpMCtx(kag);
+	if (!kg) return;
+	try {
+		if (kg.scflags === void) return;
+		if (kg.scflags.languageType !== void) {
+			kg.languageType = int(kg.scflags.languageType);
+			try { kg.textLanguageType = kg.languageType; } catch (e) { }
+		} else {
+			kg.languageType = @INDEX@;
+		}
+		if (kg.scflags.subLanguageType === void)
+			kg.scflags.subLanguageType = -1;
+		if (kg.scflags.uiLanguageType === void)
+			kg.scflags.uiLanguageType = @DEFAULT_UI@;
+		var ui = __lpMUIIndex(kg);
+		global.CurrentLanguageUITag = __lpMTags[ui];
+		try { __lpSyncSubLanguage(); } catch (e) { }
+		try {
+			if (typeof global.__lpApplyNameImages == "Object")
+				global.__lpApplyNameImages();
+		} catch (e) { }
+	} catch (e) { }
+}
+
+// ---- backlog: show the selected main language ----------------------
+function __lpMBacklogInfo(info, key, lang) {
+	try {
+		var k = global.kag;
+		if (typeof k == "Object" && k && typeof k.getLangInfo == "Object")
+			return (lang === void) ? k.getLangInfo(info, key)
+				: k.getLangInfo(info, key, lang);
+	} catch (e) { }
+	try {
+		var raw = info[key];
+		if (typeof raw == "String") return raw;
+	} catch (e) { }
+	return "";
+}
+
+function __lpMBacklogText(info, lang) {
+	var t = __lpMBacklogInfo(info, "text", lang);
+	return (typeof t == "String") ? t : "";
+}
+
+function __lpMPatchBacklogClass(cls) {
+	if (typeof cls != "Object" || !cls) return false;
+	if (typeof cls.__lpMOrigGetText == "Object") return true;
+	var orig = void;
+	try { orig = cls.getTextBlockText; } catch (e) { orig = void; }
+	if (typeof orig != "Object") return false;
+	cls.__lpMOrigGetText = orig;
+	// The stock drawTextBlock() calls getTextBlockText(), so replacing the
+	// getter localises the body without re-implementing the layout.
+	cls.getTextBlockText = function (info, lang) {
+		var t = __lpMBacklogText(info, lang);
+		if (t != "") return t;
+		try { return this.__lpMOrigGetText(info, lang); }
+		catch (e) { return ""; }
+	};
+	return true;
+}
+
+function __lpMPatchBacklog() {
+	var names = [ "CustomBacklog", "Backlog", "DragScrollableBacklog" ];
+	for (var i = 0; i < names.count; i++) {
+		var cls = void;
+		try { cls = global[names[i]]; } catch (e) { cls = void; }
+		if (typeof cls == "Object" && cls) {
+			if (__lpMPatchBacklogClass(cls)) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+// ---- hooks --------------------------------------------------------
+function __lpMSetup(kag) {
+	var k = __lpMCtx(kag);
+	if (!k) return;
+	PatchRestoreLanguageState(k);
+	var parent = void;
+	try { parent = k.textLanguageMenu; } catch (e) { parent = void; }
+	if (typeof parent == "Object" && parent) {
+		try { __lpMSync(k); } catch (e) { }
+	} else {
+		try { __lpMCreate(k); } catch (e) { }
+	}
+	__lpMLocalizeMenuBar(k);
+	__lpMUpdateCheck(k);
+	try { __lpMPatchBacklog(); } catch (e) { }
+}
+
+// KAGWindow_createMenus is a global function in stock Menus.tjs and is called
+// with ``this`` = kag.  Wrapping it (rather than relying on onKAGSetupMenu,
+// which stock KAG does not call) adds the menu after the native bar exists.
+try {
+	if (typeof KAGWindow_createMenus == "Object") {
+		// The patch keeps custom.tjs at both the root and main/ so every
+		// lookup path resolves; guard against wrapping our own wrapper when
+		// the engine executes both copies.
+		if (global.__lpMOrigCreateMenus === void) {
+			global.__lpMOrigCreateMenus = KAGWindow_createMenus;
+			KAGWindow_createMenus = function () {
+				// TJS2 has no Function.call: the "..." form passes the
+				// arguments of this call on to the original one.
+				var r = global.__lpMOrigCreateMenus(...);
+				try { __lpMSetup(this); }
+				catch (e) { Debug.message("patch: menu setup: " + e.message); }
+				return r;
+			};
+		}
+	}
+} catch (e) { Debug.message("patch: menu wrap: " + e.message); }
+
+// Games that ship an Override.tjs calling onKAGSetupMenu are covered too.
+try {
+	addKagHookCallback("onKAGSetupMenu", function (kag) {
+		try { __lpMSetup(kag); }
+		catch (e) { Debug.message("patch: language menu: " + e.message); }
+	}, false);
+} catch (e) { Debug.message("patch: language menu hook: " + e.message); }
+
+try {
+	addAfterInitCallback(function () {
+		try { __lpMSetup(typeof kag == "Object" ? kag : void); } catch (e) { }
+	});
+} catch (e) { }

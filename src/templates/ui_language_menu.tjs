@@ -1,0 +1,776 @@
+
+// ==== language submenu: standard layout (rebuilt by the patch) ===
+// The native builder knows only Main/Sub and hides the swap entry
+// unless forced multi-language mode is on.  Replace its children with
+// the reference layout, keeping the native Set*/Swap expressions.
+//
+// A title whose own interface-language setter has no
+// ``WithAskAndGoToTitle`` member cannot use the [UI] entry: the reference
+// implementation is not copied into the title (it belongs to the engine's
+// own module), so the profile decides which command the entry uses.
+function __lpSysText(key, dflt) {
+	var v = void;
+	try { v = global.GetSysLangText(key, global.CurrentLanguageUITag); }
+	catch (e) { v = void; }
+	if (typeof v == "String" && v != "") return v;
+	return dflt;
+}
+
+function __lpCfgText(key, dflt) {
+	var v = void;
+	try { v = global.SystemConfig[key]; } catch (e) { v = void; }
+	if (typeof v == "String") return v;
+	return dflt;
+}
+
+function __lpAccel(label) {
+	if (typeof label != "String") return "";
+	var p = label.indexOf("&");
+	if (p < 0 || p + 1 >= label.length) return "";
+	return label.charAt(p + 1).toUpperCase();
+}
+
+function __lpStripAccel(label) {
+	if (typeof label != "String") return "";
+	var p = label.indexOf("&");
+	if (p < 0) return label;
+	return label.substr(0, p) + label.substr(p + 1);
+}
+
+function __lpMenuGroup(group) {
+	if (group == 0) return __lpSysText("textLanguageMenuItem", "Main");
+	if (group == 1) return __lpSysText("subLanguageMenuItem", "Sub");
+	return __lpSysText("uiLanguageMenuItem", "UI");
+}
+
+// ---- shortcut assignment ----------------------------------------
+// MenuItem.shortcut is a Win32 accelerator string ("E", "Shift+E");
+// non-ASCII keys are dropped by the native setter, so every key we
+// assign must be A-Z.  Existing menus already use most of them
+// (everything but U/Y), and a duplicate makes the other item
+// fire instead, so reserve every key already in the menu tree first.
+// TJS2 String exposes no char-code getter, so test membership in the
+// allowed set with indexOf; that is portable and enough for one ASCII
+// character.
+function __lpIsAsciiAlnum(ch) {
+	if (typeof ch != "String" || ch.length != 1) return false;
+	var alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+	return alphabet.indexOf(ch.toUpperCase()) >= 0;
+}
+
+function __lpNormKey(sc) {
+	if (typeof sc != "String") return "";
+	return sc.toUpperCase().split(" ").join("");
+}
+
+function __lpKeyUsed(used, sc) {
+	var k = __lpNormKey(sc);
+	if (k == "") return false;
+	return used[k] == true;
+}
+
+function __lpReserveKey(used, sc) {
+	var k = __lpNormKey(sc);
+	if (k != "") used[k] = true;
+	return sc;
+}
+
+// Walk the whole menu tree and reserve every accelerator it already
+// has.  ``skip`` is the language submenu we replace: its own keys are
+// stale and must not block us.  Captions are parsed too because the
+// native layer may turn an ASCII "(&X)" into a real accelerator.
+function __lpCollectMenuShortcuts(item, used, skip) {
+	if (typeof item != "Object" || !item) return;
+	var ch = void;
+	try { ch = item.children; } catch (e) { ch = void; }
+	if (typeof ch != "Object" || !ch) return;
+	var n = 0;
+	try { n = ch.count; } catch (e) { n = 0; }
+	for (var i = 0; i < n; i++) {
+		var c = void;
+		try { c = ch[i]; } catch (e) { c = void; }
+		if (typeof c != "Object" || !c) continue;
+		if (skip && c == skip) continue;
+		var sc = "";
+		try { sc = c.shortcut; } catch (e) { sc = ""; }
+		if (typeof sc == "String" && sc != "") __lpReserveKey(used, sc);
+		try {
+			var cap = c.caption;
+			if (typeof cap == "String") {
+				var p = cap.indexOf("&");
+				if (p >= 0 && p + 1 < cap.length) {
+					var a = cap.charAt(p + 1);
+					if (__lpIsAsciiAlnum(a)) __lpReserveKey(used, a);
+				}
+			}
+		} catch (e) { }
+		__lpCollectMenuShortcuts(c, used, skip);
+	}
+}
+
+function __lpAddKeyCandidate(out, seen, ch) {
+	if (typeof ch != "String" || ch.length != 1) return;
+	ch = ch.toUpperCase();
+	if (!__lpIsAsciiAlnum(ch)) return;
+	if (seen[ch]) return;
+	seen[ch] = true;
+	out.add(ch);
+}
+
+// Preferred letters first (explicit & mnemonic, then the label, then
+// the tag), then the rest of the alphabet as a last resort.
+function __lpKeyCandidates(label, tag) {
+	var out = [];
+	var seen = %[];
+	var i, ch;
+	if (typeof label == "String") {
+		var p = label.indexOf("&");
+		if (p >= 0 && p + 1 < label.length)
+			__lpAddKeyCandidate(out, seen, label.charAt(p + 1));
+		var plain = __lpStripAccel(label).toUpperCase();
+		for (i = 0; i < plain.length; i++)
+			__lpAddKeyCandidate(out, seen, plain.charAt(i));
+	}
+	if (typeof tag == "String") {
+		var tg = tag.toUpperCase();
+		for (i = 0; i < tg.length; i++)
+			__lpAddKeyCandidate(out, seen, tg.charAt(i));
+	}
+	var all = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+	for (i = 0; i < all.length; i++)
+		__lpAddKeyCandidate(out, seen, all.charAt(i));
+	return out;
+}
+
+function __lpPickFirst(used, cands, mods) {
+	for (var m = 0; m < mods.count; m++) {
+		for (var i = 0; i < cands.count; i++) {
+			var sc = mods[m] + cands[i];
+			if (!__lpKeyUsed(used, sc))
+				return __lpReserveKey(used, sc);
+		}
+	}
+	return "";
+}
+
+// The usual semantics: Main is a bare letter, Sub is Shift+letter, so pick a
+// letter whose bare *and* shifted forms are both free.
+function __lpPickLangBase(used, label, tag) {
+	var cands = __lpKeyCandidates(label, tag);
+	for (var i = 0; i < cands.count; i++) {
+		var c = cands[i];
+		if (!__lpKeyUsed(used, c)
+			&& !__lpKeyUsed(used, "Shift+" + c)) {
+			__lpReserveKey(used, c);
+			__lpReserveKey(used, "Shift+" + c);
+			return %[ base: c, sub: "Shift+" + c ];
+		}
+	}
+	// Rare fallback: the bare key is free but the shifted one is not.
+	for (i = 0; i < cands.count; i++) {
+		c = cands[i];
+		if (__lpKeyUsed(used, c)) continue;
+		__lpReserveKey(used, c);
+		var sub = __lpPickFirst(used, [c], ["Shift+", "Alt+", "Ctrl+"]);
+		return %[ base: c, sub: sub ];
+	}
+	return %[ base: "", sub: "" ];
+}
+
+// group: 1 = main, 2 = sub, 3 = UI; radio groups match the native builder.
+function __lpAddLangItems(out, group, used, bases) {
+	var tags = global.LanguageTags;
+	var list = [];
+	if (group == 2) {
+		// The interface languages are a subset of the text languages: the
+		// engine numbers them by their place in the text list, so the
+		// profile says which ones have an interface of their own.
+		var uiMap = @@UI_TAGS@@;
+		for (var t = 0; t < tags.count; t++) {
+			var uiTag = tags[t];
+			if (typeof uiMap[uiTag] != "undefined")
+				list.add([uiTag, uiMap[uiTag]]);
+		}
+	} else {
+		for (var g = 0; g < tags.count; g++) list.add([tags[g], g]);
+	}
+	for (var i = 0; i < list.count; i++) {
+		var tag = list[i][0];
+		var index = list[i][1];
+		if (typeof tag != "String" || tag == "") continue;
+		var label, name, exp, prop = %[];
+		var info = bases[tag];
+		if (group == 0) {
+			label = __lpSysText("textLanguageMenuItem_" + tag, tag);
+			name = "textLanguageMenuItem_" + tag;
+			exp = "SetLanguageType(" + index + ")";
+			prop.shortcut = (typeof info == "Object" && info)
+				? info.base : "";
+		} else if (group == 1) {
+			label = __lpSysText("subLanguageMenuItem_" + tag,
+				__lpStripAccel(__lpSysText("textLanguageMenuItem_" + tag, tag)));
+			name = "subLanguageMenuItem_" + tag;
+			exp = "SetSubLanguageType(" + index + ")";
+			prop.shortcut = (typeof info == "Object" && info)
+				? info.sub : "";
+		} else {
+			label = __lpSysText("uiLanguageMenuItem_" + tag,
+				__lpStripAccel(__lpSysText("textLanguageMenuItem_" + tag, tag)));
+			name = "uiLanguageMenuItem_" + tag;
+			// Keep the title's own command.  A title whose interface
+			// language setter has no confirmation member uses the plain
+			// setter; the profile decides which one it is.
+			exp = "@@UI_COMMAND@@(" + index + ")";
+		}
+		// The native caption reset (multilang.tjs) reads item.origCaption
+		// and reformats it with multiLangMenuCapsFmt.  Every language item
+		// it knows by name must carry that property or its afterInit
+		// callback aborts the whole callback list.
+		prop.origCaption = label;
+		out.add(%[
+			name: name,
+			caption: "[" + __lpMenuGroup(group) + "] " + label,
+			group: group + 1,
+			exp: exp,
+			prop: prop,
+		]);
+	}
+}
+
+function __lpBuildLanguageMenu() {
+	// Reserve every accelerator already used by the rest of the menu
+	// bar (language submenu excluded: it is being replaced).
+	var used = %[];
+	var skip = void;
+	try { skip = global.kag.textLanguageMenu; } catch (e) { skip = void; }
+	try { __lpCollectMenuShortcuts(global.kag.menu, used, skip); }
+	catch (e) { }
+	var bases = %[];
+	var tags = global.LanguageTags;
+	if (typeof tags == "Object" && tags) {
+		for (var i = 0; i < tags.count; i++) {
+			var tag = tags[i];
+			if (typeof tag != "String" || tag == "") continue;
+			var label = __lpSysText("textLanguageMenuItem_" + tag, tag);
+			bases[tag] = __lpPickLangBase(used, label, tag);
+		}
+	}
+	var out = [];
+	__lpAddLangItems(out, 0, used, bases);
+	out.add("-");
+	__lpAddLangItems(out, 1, used, bases);
+	var subGroup = __lpMenuGroup(1);
+	var nonePref = __lpCfgText("multiLangSubLangOffShortCut",
+		"Shift+N");
+	var noneKey = "";
+	if (nonePref != "" && !__lpKeyUsed(used, nonePref))
+		noneKey = __lpReserveKey(used, nonePref);
+	else
+		noneKey = __lpPickFirst(used, __lpKeyCandidates(
+			__lpSysText("subLanguageMenuItem_none", "None"), "none"),
+			["Shift+", "Alt+", "Ctrl+", ""]);
+	out.add(%[
+		name: "subLanguageMenuItem_none",
+		caption: "[" + subGroup + "] "
+			+ __lpSysText("subLanguageMenuItem_none", "None"),
+		group: 2,
+		exp: "SetSubLanguageType(-1)",
+		prop: %[
+			origCaption: __lpSysText("subLanguageMenuItem_none", "None"),
+			shortcut: noneKey,
+			visible: 1,
+		],
+	]);
+	out.add("-");
+	// The swap entry has no group prefix.
+	var swapPref = __lpCfgText("multiLangSwapMainSubShortCut", "X");
+	var swapKey = "";
+	if (swapPref != "" && !__lpKeyUsed(used, swapPref))
+		swapKey = __lpReserveKey(used, swapPref);
+	else
+		swapKey = __lpPickFirst(used, __lpKeyCandidates(
+			__lpSysText("swapMainSubLangMenuItem",
+				"Switch Main and Sub"), "swap"),
+			["", "Shift+", "Alt+", "Ctrl+"]);
+	out.add(%[
+		name: "swapMainSubLangMenuItem",
+		caption: __lpSysText("swapMainSubLangMenuItem", "Switch Main and Sub"),
+		exp: "SwapMainSubLang()",
+		prop: %[
+			origCaption: __lpSysText("swapMainSubLangMenuItem",
+				"Switch Main and Sub"),
+			shortcut: swapKey,
+			visible: 1,
+		],
+	]);
+@@UI_GROUP@@	// The native updateLangMenuCheck() dereferences this item even when
+	// forced multi-language mode is off, so keep it hidden instead of
+	// removing it from the object graph.
+	out.add(%[
+		name: "useMultiLangMenuItem",
+		caption: "Use MultiLangView",
+		exp: "ToggleMultiLang()",
+		prop: %[
+			origCaption: "Use MultiLangView",
+			shortcut: __lpCfgText("multiLangToggleMultiShortCut", "Shift+M"),
+			visible: 0,
+		],
+	]);
+	return out;
+}
+
+function __lpUiLangCheck(k) {
+	if (typeof k != "Object" || !k) k = global.kag;
+	if (typeof k != "Object" || !k) return;
+	var tags = global.LanguageTags;
+	if (typeof tags != "Object" || !tags) return;
+	var cur = -1;
+	try { cur = (+global.SystemConfig.uiLanguageType); } catch (e) { }
+	if (cur != cur) cur = -1; // NaN guard
+	if (cur < 0) { try { cur = (+k.scflags.uiLanguageType); } catch (e) { } }
+	for (var i = 0; i < tags.count; i++) {
+		// A profile without the [UI] group has no such members; a direct
+		// read would throw and abort the whole menu hook.
+		var item = void;
+		try { item = k["uiLanguageMenuItem_" + tags[i]]; } catch (e) { item = void; }
+		if (typeof item == "Object" && item) item.checked = (i == cur);
+	}
+}
+
+// ResetAllMenuLangText rewrites captions from the INI *without* the
+// group prefix.  The native module re-adds [Main]/[Sub] itself; add the
+// [UI] prefix for the items the patch owns.  Rebuild the caption from
+// the INI instead of inspecting the current one: a previous UI switch
+// may already have left a bare or stale caption behind, and the native
+// reset also rewrites the label while keeping the old prefix.
+//
+// The three language groups are refreshed here as well: the engine's own
+// reset only rewrites the *menu bar* captions from the INI, the language
+// entries keep the caption they had when the menu was built.  Without
+// this the new entry would still read the old language name in another
+// interface language.
+function __lpUiLangCaptionFix(k) {
+	if (typeof k != "Object" || !k) k = global.kag;
+	if (typeof k != "Object" || !k) return;
+	var tags = global.LanguageTags;
+	if (typeof tags != "Object" || !tags) return;
+	var groupMain = __lpMenuGroup(0);
+	var groupSub = __lpMenuGroup(1);
+	var group = __lpMenuGroup(2);
+	// The submenu title itself is not part of the native reset; translate
+	// it from the same table so a UI change updates the whole menu.
+	try {
+		var parent = k.textLanguageMenu;
+		if (typeof parent == "Object" && parent)
+			parent.caption = __lpSysText("textLanguageMenu",
+				"テキスト言語(&L)");
+	} catch (e) { }
+	for (var i = 0; i < tags.count; i++) {
+		var tag = tags[i];
+		if (typeof tag != "String" || tag == "") continue;
+		var mainLabel = __lpSysText("textLanguageMenuItem_" + tag, tag);
+		var subLabel = __lpSysText("subLanguageMenuItem_" + tag,
+			__lpStripAccel(mainLabel));
+		var uiLabel = __lpSysText("uiLanguageMenuItem_" + tag,
+			__lpStripAccel(mainLabel));
+		var groups = [
+			[ "textLanguageMenuItem_", mainLabel, groupMain ],
+			[ "subLanguageMenuItem_", subLabel, groupSub ],
+			[ "uiLanguageMenuItem_", uiLabel, group ],
+		];
+		for (var g = 0; g < groups.length; g++) {
+			var item = void;
+			try { item = k[groups[g][0] + tag]; } catch (e) { item = void; }
+			if (typeof item != "Object" || !item) continue;
+			item.caption = "[" + groups[g][2] + "] " + groups[g][1];
+			// Keep the native caption reset working after a UI language switch.
+			try { item.origCaption = groups[g][1]; } catch (e) { }
+		}
+	}
+}
+
+function __lpMakeLanguageMenuItem(kag) {
+	var index = 0;
+	try { index = (+kag.displayMenu.index) + 1; } catch (e) { index = 0; }
+	return %[
+		name: "textLanguageMenu",
+		caption: __lpSysText("textLanguageMenu", "テキスト言語(&L)"),
+		prop: %[ index: index ],
+		children: __lpBuildLanguageMenu(),
+	];
+}
+
+// MenuItem is a native class: its ``children`` accessor hands out a
+// copy, so children.clear()/item.visible are silently discarded.  Swap
+// the whole submenu entry in the root menu array instead (plain TJS
+// Array), keeping the native name and index.
+function __lpReplaceLanguageMenuItem(kag) {
+	var old = kag.textLanguageMenu;
+	if (typeof old != "Object" || !old) return false;
+	var menu = kag.menu;
+	if (typeof menu != "Object" || !menu) return false;
+	var pos = -1;
+	for (var i = 0; i < menu.count; i++) {
+		if (menu[i] == old) { pos = i; break; }
+	}
+	if (pos < 0) return false;
+	var tmp = [];
+	createMenuFromList(kag, tmp, [__lpMakeLanguageMenuItem(kag)]);
+	if (tmp.count < 1) return false;
+	menu.erase(pos);
+	menu.insert(pos, tmp[0]);
+	return true;
+}
+
+// Fallback: empty the native submenu through MenuItem.remove(item) and
+// append the reference layout to it.
+function __lpClearLanguageMenuChildren(parent) {
+	var n = 0;
+	try {
+		var ch = parent.children;
+		for (var i = ch.count - 1; i >= 0; i--) {
+			try { parent.remove(ch[i]); n++; } catch (e) { }
+		}
+	} catch (e) { }
+	return n;
+}
+
+// Reconcile the *existing* native language submenu with the reference
+// layout.  Items are reused by name so their native menu ids -- and the
+// Win32 accelerator entries registered for those ids -- survive; only
+// entries the native builder did not create are added.  Rebuilding the
+// children instead registered a second accelerator for every key while
+// the old id stayed first in the table, which is what made some
+// shortcuts silently stop working.
+function __lpFindChildByName(kag, ch, name) {
+	// createMenuFromList stores the item as owner[name], not as a member
+	// of the item, so resolve through the owner and then require that the
+	// object really is one of the current children.
+	var item = void;
+	try { item = kag[name]; } catch (e) { item = void; }
+	if (typeof item != "Object" || !item) return void;
+	for (var i = 0; i < ch.count; i++) {
+		if (ch[i] == item) return item;
+	}
+	return void;
+}
+
+function __lpApplyMenuItem(item, spec) {
+	try { if (item.caption != spec.caption) item.caption = spec.caption; } catch (e) { }
+	// KAGMenuItem.click() evaluates ``command``; keeping the native
+	// item and only replacing the expression preserves its radio group
+	// and any onClick reference already captured by a pseudo menu.
+	try { if (item.command != spec.exp) item.command = spec.exp; } catch (e) { }
+	var oc = void, sc = void, vis = void;
+	try { oc = spec.prop.origCaption; } catch (e) { oc = void; }
+	try { sc = spec.prop.shortcut; } catch (e) { sc = void; }
+	try { vis = spec.prop.visible; } catch (e) { vis = void; }
+	if (typeof oc == "String") {
+		try { if (item.origCaption != oc) item.origCaption = oc; } catch (e) { }
+	}
+	if (typeof sc == "String") {
+		try { if (item.shortcut != sc) item.shortcut = sc; } catch (e) { }
+	}
+	if (vis !== void) {
+		try { item.visible = (vis != 0); } catch (e) { }
+	}
+}
+
+function __lpSyncLanguageMenu(kag) {
+	var parent = kag.textLanguageMenu;
+	if (typeof parent != "Object" || !parent) return false;
+	try {
+		var cap = __lpSysText("textLanguageMenu", "テキスト言語(&L)");
+		if (parent.caption != cap) parent.caption = cap;
+	} catch (e) { }
+	var ch = parent.children;
+	if (typeof ch != "Object" || !ch) return false;
+	var specs = __lpBuildLanguageMenu();
+	if (typeof specs != "Object" || !specs || specs.count < 1) return false;
+	// Separators carry no name and no accelerator, so they can be
+	// reused positionally without touching any shortcut registration.
+	var seps = [];
+	for (var s = 0; s < ch.count; s++) {
+		var scap = void;
+		try { scap = ch[s].caption; } catch (e) { scap = void; }
+		if (typeof scap == "String" && scap == "-") seps.add(ch[s]);
+	}
+	var order = [];
+	for (var i = 0; i < specs.count; i++) {
+		var spec = specs[i];
+		if (typeof spec == "String") {
+			var sep = void;
+			if (seps.count > 0) { sep = seps[0]; seps.erase(0); }
+			else {
+				var st = [];
+				createMenuFromList(kag, st, ["-"]);
+				sep = (st.count > 0) ? st[0] : void;
+			}
+			if (sep) order.add(sep);
+			continue;
+		}
+		var name = void;
+		try { name = spec.name; } catch (e) { name = void; }
+		if (typeof name != "String" || name == "") continue;
+		var item = __lpFindChildByName(kag, ch, name);
+		if (typeof item == "Object" && item) {
+			__lpApplyMenuItem(item, spec);
+		} else {
+			var tmp = [];
+			createMenuFromList(kag, tmp, [spec]);
+			item = (tmp.count > 0) ? tmp[0] : void;
+		}
+		if (typeof item == "Object" && item) order.add(item);
+	}
+	if (order.count < 1) return false;
+	// Detach and reattach the same objects: remove()/add() never change
+	// the native id, so no accelerator is re-registered or duplicated.
+	for (var j = ch.count - 1; j >= 0; j--) {
+		try { parent.remove(ch[j]); } catch (e) { }
+	}
+	for (var k = 0; k < order.count; k++) {
+		try { parent.add(order[k]); } catch (e) { }
+	}
+	__lpRefreshPseudoMenu(kag);
+	return true;
+}
+
+// The fullscreen / hidden-menu-bar shortcut tables cache item.onClick.
+// Rebuilding them after the sync keeps them pointing at the live items
+// (and picks up entries the native builder did not create).
+function __lpRefreshPseudoMenu(kag) {
+	try {
+		if (typeof kag.makePseudoMenuTable != "Object") return;
+		var ps = false;
+		try { ps = kag.pseudoFullScreened; } catch (e) { ps = false; }
+		if (ps) {
+			try {
+				kag._pseudoFullScreen.shortcut =
+					kag.makePseudoMenuTable(kag.menu);
+			} catch (e) { }
+		}
+		var hid = void;
+		try { hid = kag.menuBarHidePseudoShortcut; } catch (e) { hid = void; }
+		if (hid !== void) {
+			try {
+				kag.menuBarHidePseudoShortcut =
+					kag.makePseudoMenuTable(kag.menu);
+			} catch (e) { }
+		}
+	} catch (e) { }
+}
+
+function __lpCreateLanguageMenuItem(kag) {
+	// A single-language title ships multilang.tjs but never calls
+	// its menu builder, so there is no native textLanguageMenu to reconcile.
+	// Build the whole submenu from scratch and insert it after Display.
+	var menu = kag.menu;
+	if (typeof menu != "Object" || !menu) return false;
+	var tmp = [];
+	createMenuFromList(kag, tmp, [__lpMakeLanguageMenuItem(kag)]);
+	if (tmp.count < 1) return false;
+	var pos = -1;
+	try { pos = (+kag.displayMenu.index) + 1; } catch (e) { pos = -1; }
+	if (pos < 0 || pos > menu.count) pos = menu.count;
+	try { menu.insert(pos, tmp[0]); }
+	catch (e) { return false; }
+	return true;
+}
+
+function KAGWindow_createCustomMenus() {
+	var kag = this;
+	try {
+		var tags = global.LanguageTags;
+		if (typeof tags != "Object" || !tags || tags.count < 1) return;
+		var parent = kag.textLanguageMenu;
+		var ok = false;
+		// Preferred path: reuse the native items so their menu ids and
+		// accelerator registrations stay valid.
+		try { ok = __lpSyncLanguageMenu(kag); }
+		catch (e) { ok = false; }
+		if (!ok) {
+			// No native submenu: build the whole entry from scratch.
+			try { ok = __lpReplaceLanguageMenuItem(kag); }
+			catch (e) { ok = false; }
+		}
+		if (!ok) {
+			// No native submenu: create the whole entry and insert it.
+			try { ok = __lpCreateLanguageMenuItem(kag); }
+			catch (e) { ok = false; }
+		}
+		if (!ok) {
+			if (typeof parent != "Object" || !parent) return;
+			// Last resort: rebuild the native children in place.  Kept for
+			// titles whose submenu object cannot be reused.
+			var built = [];
+			createMenuFromList(kag, built, __lpBuildLanguageMenu());
+			if (built.count < 1) return;
+			for (var bi = 0; bi < built.count; bi++) {
+				try { parent.add(built[bi]); }
+				catch (e) { }
+			}
+			parent = kag.textLanguageMenu;
+		}
+		try {
+			if (typeof global.updateLangMenuCheck == "Object")
+				global.updateLangMenuCheck();
+		} catch (e) { }
+		__lpUiLangCheck(kag);
+		try { __lpUiLangCaptionFix(kag); } catch (e) { }
+		try { __lpPatchCustomBacklog(); } catch (e) { }
+	} catch (e) {
+		Debug.message("patch: language menu: " + e.message);
+	}
+}
+
+// ResetAllMenuLangText runs on every UI language change and is the
+// native caption refresh: it walks SystemLanguageText["!menu"], rewrites
+// every item's origCaption from the selected INI and lets the game's own
+// hook add the [Main]/[Sub]/[UI] prefixes.  Do not override those
+// captions here; only keep the radio marks and the [UI] prefix in sync
+// for the items this patch rebuilt.
+try {
+	addKagHookCallback("onResetAllMenuLangText", function () {
+		try { __lpUiLangCaptionFix(); } catch (e) { }
+		try { __lpUiLangCheck(); } catch (e) { }
+	}, 1);
+} catch (e) { Debug.message("patch: UI language hooks: " + e.message); }
+
+// The native setter fires this after it has changed SystemConfig and
+// reset the native captions.  Keep the checkmark in sync; captions are
+// owned by ResetAllMenuLangText above.
+try {
+	addKagHookCallback("onUILangChanged", function (oldTag, newTag) {
+		try { __lpUiLangCaptionFix(); } catch (e) { }
+		try { __lpUiLangCheck(); } catch (e) { }
+	}, 1);
+} catch (e) { Debug.message("patch: UI language changed hook: " + e.message); }
+
+// ==== backlog: present the selected main language ====
+// The title installs its own backlog dialog (main/custom.tjs): it
+// extends DragScrollableBacklog but overrides getTextBlockText() with a
+// plain ``info.text``, so the stock backlog always prints the base
+// language even though every history record carries the per-language
+// table.  Patch the *class* object: instances resolve methods through
+// it, so the dialog the game builds later picks the override up.  The
+// original body stays reachable through a class member.
+function __lpBacklogInfo(info, key, lang) {
+	try {
+		var k = global.kag;
+		if (typeof k == "Object" && k && typeof k.getLangInfo == "Object")
+			return (lang === void) ? k.getLangInfo(info, key)
+				: k.getLangInfo(info, key, lang);
+	} catch (e) { }
+	try {
+		var raw = info[key];
+		if (typeof raw == "String") return raw;
+	} catch (e) { }
+	return "";
+}
+
+function __lpBacklogText(info, lang) {
+	var t = __lpBacklogInfo(info, "text", lang);
+	return (typeof t == "String") ? t : "";
+}
+
+function __lpPatchCustomBacklog() {
+	var cls = void;
+	try { cls = global.CustomBacklog; } catch (e) { cls = void; }
+	if (typeof cls != "Object" || !cls) {
+		return false;
+	}
+	if (typeof cls.__lpOrigGetTextBlockText == "Object") {
+		return true;
+	}
+	var origText = void, origDraw = void, origLang = void;
+	try { origText = cls.getTextBlockText; } catch (e) { origText = void; }
+	try { origDraw = cls.drawTextBlock; } catch (e) { origDraw = void; }
+	try { origLang = cls.onLangChanged; } catch (e) { origLang = void; }
+	if (typeof origText != "Object") {
+		return false;
+	}
+	cls.__lpOrigGetTextBlockText = origText;
+	cls.getTextBlockText = function (info, lang) {
+		var t = __lpBacklogText(info, lang);
+		if (t != "") return t;
+		try { return this.__lpOrigGetTextBlockText(info, lang); }
+		catch (e) { return ""; }
+	};
+	if (typeof origDraw == "Object") {
+		cls.__lpOrigDrawTextBlock = origDraw;
+		// Same layout as the original, but the body and the speaker
+		// name come from the active language.  getFaceLayer() still
+		// receives the untouched record so portrait lookup is stable.
+		cls.drawTextBlock = function (lay, info) {
+			var tr = void, fr = void, rnd = void, indent = 0;
+			try { tr = this.textRect; } catch (e) { tr = void; }
+			try { fr = this.faceRect; } catch (e) { fr = void; }
+			try { rnd = this._render; } catch (e) { rnd = void; }
+			try { indent = this.renderAutoIndent; } catch (e) { indent = 0; }
+			if (typeof tr != "Object" || !tr || typeof rnd != "Object" || !rnd)
+				return this.__lpOrigDrawTextBlock(lay, info);
+			try {
+				lay.drawTextOwner = this;
+				lay.drawTextOrig  = this.internalDrawText2 incontextof lay;
+				lay.drawText <-> lay.drawTextOrig;
+				var subType = -1;
+				if (@@BACKLOG_SUB_ENABLED@@) {
+					try {
+						// "none" is void here, and void becomes 0 when it is
+						// converted to a number -- so the empty value has to
+						// be recognised before the number is taken.
+						var sub = global.kag.subLanguageType;
+						if (sub !== void) subType = (+sub);
+					} catch (e) { subType = -1; }
+					if (subType >= 0 && subType == global.kag.languageType) subType = -1;
+				}
+				var text = this.getTextBlockText(info);
+				if (subType >= 0) {
+					// Two languages share the width, so the line breaks of the
+					// first one are cut -- exactly as the title does it.
+					try { text = text.replace(/\n/g, ""); } catch (e) { }
+				}
+				var cnt = this.getLineCount(text);
+				var orig = rnd.defaultLineSpacing;
+				if (cnt >= 4 || subType >= 0) rnd.defaultLineSpacing = 2;
+				with (tr) rnd.draw(lay, .ox, .oy + rnd.defaultRubySize, .w, .h, text, indent);
+				if (cnt >= 4) rnd.defaultLineSpacing = orig;
+				var face = this.getFaceLayer(info);
+				if (face !== void) {
+					lay.operateRect(this.fox, this.foy, face, 0, 0, face.imageWidth, face.imageHeight);
+				} else if (info.name != "") {
+					var disp = __lpBacklogInfo(info, "disp");
+					if (disp == "") disp = __lpBacklogInfo(info, "name");
+					if (typeof fr == "Object" && fr)
+						with (fr) rnd.draw(lay, .ox, .oy + rnd.defaultRubySize, .w, .h, disp);
+					else
+						rnd.draw(lay, 0, 0, 400, 40, disp);
+				}
+@@BACKLOG_SUB@@			} catch (e) {
+				try { lay.drawText <-> lay.drawTextOrig; } catch (e2) { }
+				// Never leave the backlog blank: retry with the stock body.
+				try { return this.__lpOrigDrawTextBlock(lay, info); } catch (e3) { }
+				throw e;
+			}
+			lay.drawText <-> lay.drawTextOrig;
+		};
+	}
+	if (typeof origLang == "Object") cls.__lpOrigOnLangChanged = origLang;
+	// The native language switch calls Current.action("onLangChanged")
+	// on the open dialog; rebuild its blocks in the new language.
+	cls.onLangChanged = function () {
+		if (typeof this.__lpOrigOnLangChanged == "Object") {
+			try { this.__lpOrigOnLangChanged(); } catch (e) { }
+		}
+		try { this.clearAllTextBlocks(); } catch (e) { }
+		try { this.updateTextBlock(this.scroll); } catch (e) { }
+	};
+	return true;
+}
+
+
+try {
+	addAfterInitCallback(function () {
+		try { __lpPatchCustomBacklog(); } catch (e) { }
+	});
+} catch (e) { }

@@ -1,0 +1,279 @@
+// ==== speaker name plate ==============================================
+// The dialogue text and the speaker name are drawn by two different
+// objects.  The title gives the plate a fixed face (a decorative font, or
+// the interface font), so the name does not follow the reading face; and
+// a language the title was never built for has no entry in its face maps,
+// so the plate falls back to the engine default (MS Shell Dlg 2 -- MS
+// Gothic on a system without that font).
+//
+// Wrapping resetNameLayerFont lets the plate copy the face the message
+// text was just given, so the two always match.  Every message-layer class
+// is wrapped, not only MessageLayer: titles that subclass it (msghack's
+// CustomMessageLayer) install their own resetNameLayerFont, and wrapping
+// the base class alone would silently miss them.
+//
+// `language.name_font.face` is optional.  When set it overrides the face
+// (a deliberately distinct name face); when absent the message face is
+// used.  `size` / `scale` / `bold` are optional too: by default the plate
+// keeps the size and weight the engine gave it.
+//
+// The face is captured once per session and then reused.  It cannot be
+// read from MessageDefaultFontFaceMap on every draw: a title that switches
+// its interface to another language rewrites that map for *every* language
+// (custom.tjs _applyUITextFont), so the plate would adopt a face that does
+// not belong to the new language.  A value captured before any switch
+// stays correct no matter what the user picks later.
+if (typeof global.__lpNameFace != "String") global.__lpNameFace = "";
+
+// "The system fallback" is never a useful choice: it is what a missing
+// language entry resolves to, and it is the reason the plate looked
+// different from the reading text.
+function __lpUnsafeFace(face) {
+	if (typeof face != "String") return true;
+	face = face.trim();
+	if (face == "") return true;
+	var low = face.toLowerCase();
+	if (low == "*" || low == "lang_*") return true;
+	if (low.indexOf("ms shell dlg") == 0) return true;
+	return false;
+}
+
+// Give the new language the faces of the base language.  The title only
+// knows the languages it ships with; a tag it has never seen has no entry
+// in either face map, and every missing entry falls back to lang_*.
+// Existing entries are only filled in, never replaced, so the faces the
+// title picked for its own languages survive an interface switch.
+// SystemConfig.multiLangParamsMap carries the non-layout switches (such as
+// a per-language face) the same way.
+function __lpTagFaces() {
+	var tag = @@TAG@@;
+	var base = @@BASE_TAG@@;
+	if (base == "" || base == tag) return false;
+	// message face
+	try {
+		var msg = global.MessageDefaultFontFaceMap;
+		if (msg) {
+			var msgFace = msg[base];
+			if (__lpUnsafeFace(msgFace)) {
+				try { msgFace = global.MessageDefaultFontFace; } catch (e) { }
+			}
+			if (!__lpUnsafeFace(msgFace)) {
+				if (typeof msg[tag] != "String" || __lpUnsafeFace(msg[tag]))
+					msg[tag] = msgFace;
+			}
+		}
+	} catch (e) { }
+	// interface face -- the name plate is an ordinary layer and reads this
+	// map when the title does not give it an explicit name face
+	try {
+		var sys = global.SystemDefaultFontFaceMap;
+		if (sys) {
+			var sysFace = sys[base];
+			if (__lpUnsafeFace(sysFace)) {
+				try { sysFace = sys["*"]; } catch (e2) { }
+			}
+			if (__lpUnsafeFace(sysFace)) {
+				try { sysFace = global.SystemDefaultFontFace; } catch (e3) { }
+			}
+			if (!__lpUnsafeFace(sysFace)) {
+				if (typeof sys[tag] != "String" || __lpUnsafeFace(sys[tag]))
+					sys[tag] = sysFace;
+			}
+		}
+	} catch (e) { }
+	// per-language parameters
+	try {
+		var params = global.SystemConfig.multiLangParamsMap;
+		if (params) {
+			var src = params[base];
+			if (src) {
+				var dst = params[tag];
+				if (typeof dst != "Object" || !dst) {
+					dst = %[];
+					params[tag] = dst;
+				}
+				src.foreach(function (key, value) {
+					if (dst[key] === void) dst[key] = value;
+				});
+			}
+		}
+	} catch (e) { }
+	return true;
+}
+
+function __lpNameFontFace(layer) {
+	var face = @@FACE@@; // empty -> follow the message text
+	if (typeof face == "String" && face != "") return face;
+	// Already decided: never follow an interface or story-language switch.
+	var pinned = global.__lpNameFace;
+	if (!__lpUnsafeFace(pinned)) return pinned;
+	// The face the multi-language renderer uses for this text language.
+	// This is a real face name, not a per-language alias, so it stays
+	// readable even when the title drives the text through a dynamic font.
+	try {
+		var map = global.MessageDefaultFontFaceMap;
+		if (map && !__lpUnsafeFace(map[@@TAG@@])) return map[@@TAG@@];
+	} catch (e) { }
+	// Hard fallback: the base language is known to render correctly.
+	try {
+		var map2 = global.MessageDefaultFontFaceMap;
+		if (map2 && !__lpUnsafeFace(map2[@@BASE_TAG@@])) return map2[@@BASE_TAG@@];
+	} catch (e) { }
+	try {
+		var fixed = global.MessageDefaultFontFace;
+		if (!__lpUnsafeFace(fixed)) return fixed;
+	} catch (e) { }
+	// The face the message text was just given.  resetFont() stores it in
+	// MessageLayer.fontFace right before resetNameLayerFont().
+	try {
+		if (!__lpUnsafeFace(layer.fontFace)) return layer.fontFace;
+	} catch (e) { }
+	try {
+		if (!__lpUnsafeFace(layer.userFace)) return layer.userFace;
+	} catch (e) { }
+	try {
+		var k = global.kag;
+		if (k && !__lpUnsafeFace(k.chDefaultFace)) return k.chDefaultFace;
+	} catch (e) { }
+	return "";
+}
+
+function __lpApplyNameFont(layer, capture) {
+	if (typeof layer != "Object" || !layer) return false;
+	var name = void;
+	try { name = layer.nameLayer; } catch (e) { name = void; }
+	if (typeof name != "Object" || !name) return false;
+	var font = void;
+	try { font = name.font; } catch (e) { font = void; }
+	if (typeof font != "Object" || !font) return false;
+	// The new language's own entries must exist before the face is read.
+	if (capture && global.__lpNameFace == "") {
+		try { __lpTagFaces(); } catch (e) { }
+	}
+	var face = __lpNameFontFace(layer);
+	if (face == "") return false;
+	try { font.face = face; } catch (e) { return false; }
+	// Titles that install their own resetNameLayerFont copy this member
+	// after the engine's call; writing it keeps the plate on the same face
+	// in paths that never reach the wrapper below.
+	try { layer.nameLayerFontFace = face; } catch (e) { }
+	// Freeze the choice at the first real reset -- the one call made while
+	// the message text face is known.
+	if (capture && global.__lpNameFace == "") {
+		var textFace = "";
+		// Same order as __lpNameFontFace: the map entry is the renderer's
+		// face; the layer members can be per-language aliases.
+		try {
+			var map = global.MessageDefaultFontFaceMap;
+			if (map && !__lpUnsafeFace(map[@@TAG@@])) textFace = map[@@TAG@@];
+		} catch (e) { }
+		if (textFace == "") {
+			try {
+				if (!__lpUnsafeFace(global.MessageDefaultFontFace))
+					textFace = global.MessageDefaultFontFace;
+			} catch (e) { textFace = ""; }
+		}
+		if (textFace == "") {
+			try { if (!__lpUnsafeFace(layer.fontFace)) textFace = layer.fontFace; } catch (e) { }
+		}
+		if (textFace != "") global.__lpNameFace = textFace;
+	}
+	@@SIZE@@
+	@@BOLD@@
+	return true;
+}
+
+// Apply the face to the layers that already exist.  resetNameLayerFont()
+// only runs when the name, the language or the user font changes, so a
+// plain install during startup would leave the visible plate untouched.
+function __lpRefreshNameFont() {
+	var k = void;
+	try { k = global.kag; } catch (e) { k = void; }
+	if (typeof k != "Object" || !k) return;
+	var lists = [];
+	try { lists.add(k.fore.messages); } catch (e) { }
+	try { lists.add(k.back.messages); } catch (e) { }
+	try { lists.add([k.getMessageLayer()]); } catch (e) { }
+	for (var i = 0; i < lists.count; i++) {
+		var list = lists[i];
+		if (!list || list.count === void) continue;
+		for (var j = 0; j < list.count; j++) {
+			try { __lpApplyNameFont(list[j], false); } catch (e) { }
+		}
+	}
+}
+
+// TJS2 functions do not capture the locals of the enclosing function: a
+// bare `orig` inside the replacement throws ("Member orig does not exist").
+// The original has to live on the object itself, and the replacement reads
+// it back through `this` -- the same idiom the titles use for their own
+// method hooks (`this.__lpOrig...`).  Wrapping the base class covers every
+// instance that inherits it; a subclass with its own implementation is
+// wrapped as well, and stores its own original under the same member name
+// (instance lookup finds the most derived one, so the two never collide).
+function __lpWrapNameReset(obj) {
+	if (typeof obj != "Object" || !obj) return false;
+	var orig = void;
+	try { orig = obj.resetNameLayerFont; } catch (e) { return false; }
+	if (typeof orig != "Object") return false;
+	// Already replaced by us and nobody changed it since.  Strict identity:
+	// `==` on two closures would run their comparison operator.
+	try {
+		if (typeof obj.__lpNameResetWrapper == "Object" &&
+		    obj.__lpNameResetWrapper === orig) return false;
+	} catch (e) { }
+	try { obj.__lpOrigResetNameLayerFont = orig; } catch (e) { return false; }
+	var wrapper = function () {
+		var r = void;
+		try { r = this.__lpOrigResetNameLayerFont(...); } catch (e) { }
+		try { __lpApplyNameFont(this, true); } catch (e) { }
+		return r;
+	};
+	try { obj.__lpNameResetWrapper = wrapper; } catch (e) { return false; }
+	try { obj.resetNameLayerFont = wrapper; } catch (e) { return false; }
+	return true;
+}
+
+function __lpInstallNameFont() {
+	// The base class and the subclass titles actually use.  A subclass that
+	// only inherits is covered by the base wrap; wrapping it as well would
+	// make it call itself through the shared member name.
+	var base = void;
+	try { base = global.MessageLayer; } catch (e) { base = void; }
+	var sub = void;
+	try { sub = global.CustomMessageLayer; } catch (e) { sub = void; }
+	var subOwn = false;
+	if (typeof sub == "Object" && sub) {
+		var own = void, sup = void;
+		try { own = sub.resetNameLayerFont; } catch (e) { own = void; }
+		try { sup = base ? base.resetNameLayerFont : void; } catch (e) { sup = void; }
+		subOwn = (typeof own == "Object" &&
+		          (typeof sup != "Object" || own !== sup));
+	}
+	if (typeof base == "Object" && base) {
+		try { __lpWrapNameReset(base); } catch (e) { }
+	}
+	if (subOwn) {
+		try { __lpWrapNameReset(sub); } catch (e) { }
+	}
+	global.__lpNameFontInstalled = true;
+	try { __lpRefreshNameFont(); } catch (e) { }
+	return true;
+}
+
+// The name plate becomes visible exactly when a speaker name is drawn --
+// re-assert the face there so a reset from any other code path cannot win.
+try {
+	addKagHookCallback("onNameLayerVisibleChanged", function (nlay, vis) {
+		try {
+			if (nlay && nlay.owner) __lpApplyNameFont(nlay.owner, false);
+		} catch (e) { }
+	}, false);
+} catch (e) { }
+
+try { __lpInstallNameFont(); } catch (e) { }
+try {
+	addAfterInitCallback(function () {
+		try { __lpInstallNameFont(); } catch (e) { }
+	}, 2);
+} catch (e) { }

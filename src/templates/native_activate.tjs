@@ -1,0 +1,388 @@
+
+// The base custom.tjs installs its F10 hook immediately but only stores
+// the SYSKEYDOWN notification number in an afterInit callback.  If any
+// earlier afterInit callback throws (the native multilang caption reset
+// does when a menu item lacks origCaption), that callback never runs and
+// every window message then throws inside the hook - which can take the
+// whole process down.  Seed the value as soon as kag exists.
+try {
+	global.sysKeyDownMessageNum = Window.getNotificationNum("SYSKEYDOWN");
+	if (typeof global.kag == "Object" && global.kag)
+		global.kag.sysKeyDownMessageNum = global.sysKeyDownMessageNum;
+} catch (e) { }
+
+// multilang.tjs calls initLanguageFont() while the window is set up and
+// dereferences global.MessageDefaultFontFaceMap without checking it.  The
+// base game defines no such map (only the international build does, in
+// Config.tjs), so create an empty one now: initLanguageFont then falls
+// back to the game's own message face for every tag instead of aborting.
+// The afterInit callbacks below give the new language the base language's
+// faces (__lpTagFaces) once the title has built its own maps.
+try {
+	if (typeof global.MessageDefaultFontFaceMap != "Object" || !global.MessageDefaultFontFaceMap) {
+		global.MessageDefaultFontFaceMap = %[];
+	}
+} catch (e) { Debug.message("patch: font face map: " + e.message); }
+try {
+	addAfterInitCallback(function () {
+		// Never rebuild the maps: the title's own per-language faces are
+		// correct and must survive an interface switch.  Only the new
+		// language's entries are filled in from the base language.
+		try {
+			if (typeof global.__lpTagFaces == "Object") global.__lpTagFaces();
+		} catch (e) { }
+		// A title that picks a face for its own interface writes that
+		// face into the map for *every* language; the new language keeps
+		// the default message face, so the speaker name and the text are
+		// drawn alike.
+		try {
+			if (typeof global.__lpRestoreMessageFace == "Object")
+				global.__lpRestoreMessageFace();
+		} catch (e) { }
+	}, 1);
+} catch (e) { Debug.message("patch: font face map hook: " + e.message); }
+
+// The title applies its own face after every start and after every
+// interface language change, so the new language's face is put back once
+// more -- later than the title's own callback.
+try {
+	addAfterInitCallback(function () {
+		try {
+			if (typeof global.__lpRestoreMessageFace == "Object")
+				global.__lpRestoreMessageFace();
+		} catch (e) { }
+	}, 2);
+} catch (e) { }
+
+// Last pass: the title's font setup (msghack subclasses, ExChView) can
+// replace resetNameLayerFont while the window is created.  Wrapping again
+// here puts the plate wrapper on top of whatever it installed.
+try {
+	addAfterInitCallback(function () {
+		try {
+			if (typeof global.__lpTagFaces == "Object") global.__lpTagFaces();
+		} catch (e) { }
+		try {
+			if (typeof global.__lpInstallNameFont == "Object")
+				global.__lpInstallNameFont();
+		} catch (e) { }
+	}, 3);
+} catch (e) { }
+
+// ==== native multi-language subsystem: load after the game body ====
+try { KAGLoadScriptOnce("multilang.tjs"); }
+catch (e) { Debug.message("patch: multilang.tjs: " + e.message); }
+
+@@LANGUAGE_SWITCH@@
+// ==== native render mode ====
+// The two-column renderer only runs while renderMsgMode is on.  The
+// original scenario macro switches it on with [msgmode], but the base
+// game's initscene never issues that tag, and RenderMsgwinPlugin
+// resets the flag to 0 for every new scenario.  Turn it on once the
+// window exists and again right after each scenario load.
+function __lpEnableRenderMsgMode() {
+	try {
+		var kg = global.kag;
+		if (typeof kg != "Object" || !kg) return;
+		var p = kg.renderMsgwinPlugin;
+		if (typeof p != "Object" || !p) return;
+		p.renderMsgMode = 1;
+	} catch (e) { }
+}
+try {
+	addAfterInitCallback(function () {
+		__lpEnableRenderMsgMode();
+	}, 1);
+} catch (e) { Debug.message("patch: render mode hook: " + e.message); }
+try {
+	if (typeof global.RenderMsgwinPlugin == "Object" && global.RenderMsgwinPlugin &&
+	    typeof global.RenderMsgwinPlugin.onScenarioLoaded == "Object") {
+		global.RenderMsgwinPlugin.__lpOrigOnScenarioLoaded = global.RenderMsgwinPlugin.onScenarioLoaded;
+		global.RenderMsgwinPlugin.onScenarioLoaded = function (storage, process) {
+			var r = this.__lpOrigOnScenarioLoaded(...);
+			try {
+				if (process) this.renderMsgMode = 1;
+			} catch (e) { }
+			return r;
+		};
+	}
+} catch (e) { Debug.message("patch: render mode wrap: " + e.message); }
+
+// ==== native render mode: the name box ====
+// While the native renderer is active the plain KAG name path does not run:
+// the renderer resolves the speaker name itself (``MsgwinRender.drawName``
+// -> ``MessageLayer.processName``).  It does that on a redraw, but a stray
+// ``msg`` tag can also ask for a name -- with an empty one -- and that hides
+// the plate.  The record of the line that is on screen is therefore the only
+// source of truth: the render hooks draw that name, and every other
+// ``drawName`` request is ignored while the renderer owns the plate.
+// NOTE: TJS2 functions do not close over local variables -- every name that
+// is not a parameter or a local is looked up on the call-time ``this`` and
+// then on the global object.  Hooks therefore reach shared state through
+// ``global.*`` and the originals through members of the object they patch.
+global.__lpNameOwnsPlate = false;
+
+function __lpIsRenderMode() {
+	try {
+		var p = global.kag.renderMsgwinPlugin;
+		if (typeof p == "Object" && p && (+p.renderMsgMode)) return true;
+	} catch (e) { }
+	return false;
+}
+
+function __lpCurrentRender() {
+	try {
+		var p = global.kag.renderMsgwinPlugin;
+		if (typeof p != "Object" || !p) return void;
+		var n = +(global.kag.currentNum);
+		if (n != n) return void;
+		var r = p.getRenderId(n);
+		if (typeof r == "Object" && r) return r;
+	} catch (e) { }
+	return void;
+}
+
+// The script record of the chunk ``r`` last rendered.
+function __lpRenderLast(r) {
+	try {
+		if (typeof r != "Object" || !r) return void;
+		var ct = r.currentText;
+		if (typeof ct != "Object" || !ct || ct.count == 0) return void;
+		var last = ct[ct.count - 1];
+		if (typeof last == "Object" && last) return last;
+	} catch (e) { }
+	return void;
+}
+
+// The speaker name of one script record, before the display filter runs.
+function __lpNameOfRecord(rec) {
+	try {
+		if (typeof rec != "Object" || !rec) return "";
+		var disp = "";
+		try { disp = string(global.kag.getLangInfo(rec, "disp")); } catch (e) { disp = ""; }
+		if (disp != "") return disp;
+		var name = "";
+		try { name = string(rec.name); } catch (e) { name = ""; }
+		if (name != "") {
+			try { return string(global.kag.getAliasName(name)); } catch (e) { return name; }
+		}
+	} catch (e) { }
+	return "";
+}
+
+// One line of text is stored as several records: the named one first, then
+// the continuation chunks the renderer appends to the same window (``noer``).
+// The name belongs to the named record; a later chunk must inherit it and
+// must never hide the plate.
+function __lpNameRecordFor(r, rec) {
+	try {
+		if (typeof rec == "Object" && rec && __lpNameOfRecord(rec) != "") return rec;
+		var ct = (typeof r == "Object" && r) ? r.currentText : void;
+		if (typeof ct != "Object" || !ct || ct.count == 0) return rec;
+		var i = ct.count - 1;
+		while (i >= 0) {
+			var cur = ct[i];
+			if (typeof cur == "Object" && cur) {
+				if (__lpNameOfRecord(cur) != "") return cur;
+				var cont = false;
+				try { cont = (typeof cur.noer != "undefined") && cur.noer; } catch (e) { cont = false; }
+				// A record without ``noer`` starts a new (unnamed) message.
+				if (!cont) return cur;
+			}
+			--i;
+		}
+	} catch (e) { }
+	return rec;
+}
+
+// ``MsgwinRender.drawName`` resolves the name, runs the display filter and
+// applies the result to the message layer the render belongs to.
+function __lpDrawRenderName(r) {
+	try {
+		var last = __lpRenderLast(r);
+		if (last === void) return;
+		__lpEnsureNameFilter();
+		r.drawName(last);
+	} catch (e) { }
+}
+
+function __lpWrapRender(r) {
+	if (typeof r != "Object" || !r) return;
+	try {
+		if (typeof r.__lpNameWrapped != "undefined") return;
+		r.__lpNameWrapped = true;
+		r.__lpOrigStart = r.start;
+		r.__lpOrigStop = r.stop;
+		r.__lpOrigDrawName = r.drawName;
+		r.drawName = function (rec) {
+			__lpEnsureNameFilter();
+			return (this.__lpOrigDrawName incontextof this)(__lpNameRecordFor(this, rec));
+		};
+		r.start = function (arg0) {
+			var res = (this.__lpOrigStart incontextof this)(arg0);
+			__lpDrawRenderName(this);
+			return res;
+		};
+		r.stop = function (arg0) {
+			var res = (this.__lpOrigStop incontextof this)(arg0);
+			try {
+				if (+this.no == +(global.kag.currentNum)) __lpDrawRenderName(this);
+			} catch (e) { }
+			return res;
+		};
+	} catch (e) { }
+}
+
+// ``MsgwinRender`` is created through ``RenderMsgwinPlugin.getRenderId``; the
+// wrapper is installed there so every render, including the ones created
+// before the window was ready, gets the name hooks.
+try {
+	addAfterInitCallback(function () {
+		try {
+			var p = global.kag.renderMsgwinPlugin;
+			if (typeof p != "Object" || !p) return;
+			if (typeof p.getRenderId != "Object") return;
+			if (typeof p.__lpOrigGetRenderId == "undefined") {
+				p.__lpOrigGetRenderId = p.getRenderId;
+				p.getRenderId = function (arg0, arg1 = 0) {
+					var self = this;
+					if (typeof self.__lpOrigGetRenderId != "Object")
+						self = global.kag.renderMsgwinPlugin;
+					var r = (self.__lpOrigGetRenderId incontextof self)(arg0, arg1);
+					__lpWrapRender(r);
+					return r;
+				};
+			}
+			global.__lpNameOwnsPlate = true;
+		} catch (e) { }
+	}, 2);
+} catch (e) { }
+
+// A ``msg`` tag shows a name through ``tagHandlers.dispname`` before the
+// renderer even starts, and it passes an empty name for the trailing chunk of
+// every line.  While the renderer owns the plate those requests are dropped:
+// the name of the line on screen has already been drawn by the render hook.
+try {
+	addAfterInitCallback(function () {
+		try {
+			var kg = global.kag;
+			if (typeof kg != "Object" || !kg) return;
+			if (typeof kg.drawName != "Object") return;
+			if (typeof kg.__lpOrigDrawName == "Object") return;
+			global.kag.__lpOrigDrawName = global.kag.drawName;
+			global.kag.drawName = function (arg0, *) {
+				var owns = global.__lpNameOwnsPlate && __lpIsRenderMode();
+				if (owns) return;
+				__lpEnsureNameFilter();
+				return (global.kag.__lpOrigDrawName incontextof global.kag)(arg0, *);
+			};
+		} catch (e) { }
+	}, 3);
+} catch (e) { }
+
+// ==== speaker names: translate the label, never the key ====
+// The name is also the key into the title's voice table, the alias table and
+// the name plate map, so every language column of the scenario keeps the
+// title's own name.  Only the string that is drawn is translated, through the
+// engine's own ``dispNameFilter`` hook -- ``drawName`` resolves the image and
+// the alias *before* it calls the filter.
+global.__lpNameTable = @@NAME_TABLE@@;
+
+// ``sysscn/Override.tjs`` (and every other script that loads later) reassigns
+// ``global.dispNameFilter`` to its own identity function, wiping our hook.
+// Keep the previous one and put ours back on top right before anything draws;
+// the previous filter still runs, so a title that had one keeps it.
+function __lpEnsureNameFilter() {
+	try {
+		if (typeof global.dispNameFilter != "undefined" &&
+		    global.dispNameFilter == __lpDispNameFilter) return;
+		var cur = void;
+		try {
+			if (typeof global.dispNameFilter != "undefined") cur = global.dispNameFilter;
+		} catch (e) { cur = void; }
+		if (typeof cur == "Object" && cur && cur != __lpDispNameFilter)
+			global.__lpPrevNameFilter = cur;
+		global.dispNameFilter = __lpDispNameFilter;
+	} catch (e) { }
+}
+
+function __lpDispNameFilter(name) {
+	try {
+		if (typeof name != "String" || name == "") return name;
+		var src = name;
+		var prev = void;
+		try {
+			if (typeof global.__lpPrevNameFilter != "undefined") prev = global.__lpPrevNameFilter;
+		} catch (e) { prev = void; }
+		if (typeof prev == "Object" && prev && prev != __lpDispNameFilter) {
+			try {
+				var chained = prev(src);
+				if (typeof chained == "String" && chained != "") src = chained;
+			} catch (e) { }
+		}
+		var lang = 0;
+		try { lang = +(global.kag.languageType); } catch (e) { lang = 0; }
+		var table = global.__lpNameTable;
+		var value = void;
+		if (typeof table == "Object" && table) {
+			try { value = table[src]; } catch (e) { value = void; }
+		}
+		if (lang != @@NAME_INDEX@@) return name;
+		if (value === void || value == "") return name;
+		return value;
+	} catch (e) { }
+	return name;
+}
+try { global.dispNameFilter = __lpDispNameFilter; }
+catch (e) { Debug.message("patch: name filter: " + e.message); }
+
+// The filter reads the active language while it draws, so a language switch
+// only needs a redraw of the plate: redraw the line that is on screen.
+function __lpRefreshNames() {
+	try {
+		__lpDrawRenderName(__lpCurrentRender());
+	} catch (e) { }
+}
+try {
+	if (typeof addKagHookCallback == "Object") {
+		addKagHookCallback("onSystemLangChanged", function (arg0, arg1) {
+			__lpRefreshNames();
+		}, 2);
+	}
+} catch (e) { Debug.message("patch: name refresh hook: " + e.message); }
+
+// The menu is built before ``global.kag`` exists, so the UI language proxy
+// reads its default while captions are created.  Apply the saved choice
+// once the window is ready; this also re-localises the menu captions.
+try {
+	addAfterInitCallback(function () {
+		try {
+			if (typeof global.kag == "Object" && global.kag) {
+				var ui = 0;
+				try { ui = (+global.kag.scflags.uiLanguageType); } catch (e) { }
+				if (ui != ui) ui = 0; // NaN guard
+				if (typeof global.__lpApplyUILanguage == "Object")
+					global.__lpApplyUILanguage(ui, false);
+				else
+					SetUILanguageType(ui);
+			}
+		} catch (e) { Debug.message("patch: UI language select: " + e.message); }
+	}, 1);
+} catch (e) { Debug.message("patch: UI language hook: " + e.message); }
+
+// First launch only: keep the interface in the game's own language but
+// open the patched text column.  A saved choice always wins: KAG stores
+// the text language as kag.scflags.languageType and restores it before
+// afterInit, so only an absent value means "never chosen".
+try {
+	addAfterInitCallback(function () {
+		try {
+			if (typeof global.kag == "Object" && global.kag &&
+			    typeof global.kag.scflags == "Object" && global.kag.scflags) {
+				if (typeof global.kag.scflags.languageType == "undefined") {
+					SetLanguageType(@@INDEX@@);
+				}
+			}
+		} catch (e) { Debug.message("patch: language select: " + e.message); }
+	}, 1);
+} catch (e) { Debug.message("patch: language select hook: " + e.message); }

@@ -1,0 +1,77 @@
+// ==== speaker names: translate the drawn label =========================
+// A speaker name is also the key into the title's voice table, its alias
+// table and its name plate, so every language column of the scenario keeps
+// the title's own name.  Only the string that is finally drawn is translated,
+// from the workbook's ``Names`` sheet (``name_<base> -> name_<tag>``).
+//
+// This is the variant for titles that draw names with the engine's own path.
+// Native multilang builds get the same hook from ``native_activate.tjs``.
+global.__lpNameTable = @@NAME_TABLE@@;
+
+// ``sysscn/Override.tjs`` (and every other script that loads later) reassigns
+// ``global.dispNameFilter`` to its own identity function, wiping our hook.
+// Keep the previous one and put ours back on top right before anything draws;
+// the previous filter still runs, so a title that had one keeps it.
+function __lpEnsureNameFilter() {
+	try {
+		if (typeof global.dispNameFilter != "undefined" &&
+		    global.dispNameFilter == __lpDispNameFilter) return;
+		var cur = void;
+		try {
+			if (typeof global.dispNameFilter != "undefined") cur = global.dispNameFilter;
+		} catch (e) { cur = void; }
+		if (typeof cur == "Object" && cur && cur != __lpDispNameFilter)
+			global.__lpPrevNameFilter = cur;
+		global.dispNameFilter = __lpDispNameFilter;
+	} catch (e) { }
+}
+
+function __lpDispNameFilter(name) {
+	try {
+		if (typeof name != "String" || name == "") return name;
+		var src = name;
+		var prev = void;
+		try {
+			if (typeof global.__lpPrevNameFilter != "undefined") prev = global.__lpPrevNameFilter;
+		} catch (e) { prev = void; }
+		if (typeof prev == "Object" && prev && prev != __lpDispNameFilter) {
+			try {
+				var chained = prev(src);
+				if (typeof chained == "String" && chained != "") src = chained;
+			} catch (e) { }
+		}
+		var lang = 0;
+		try { lang = +(global.kag.languageType); } catch (e) { lang = 0; }
+		var table = global.__lpNameTable;
+		var value = void;
+		if (typeof table == "Object" && table) {
+			try { value = table[src]; } catch (e) { value = void; }
+		}
+		if (lang != @@NAME_INDEX@@) return name;
+		if (value === void || value == "") return name;
+		return value;
+	} catch (e) { }
+	return name;
+}
+
+try { global.dispNameFilter = __lpDispNameFilter; }
+catch (e) { Debug.message("patch: name filter: " + e.message); }
+
+// The engine's own ``drawName`` applies ``dispNameFilter`` and then draws.
+// Re-install the hook before each call so a late-loading override cannot
+// leave the filter replaced; the call itself is untouched.
+try {
+	addAfterInitCallback(function () {
+		try {
+			var kg = global.kag;
+			if (typeof kg != "Object" || !kg) return;
+			if (typeof kg.drawName != "Object") return;
+			if (typeof kg.__lpOrigDrawName == "Object") return;
+			global.kag.__lpOrigDrawName = global.kag.drawName;
+			global.kag.drawName = function (arg0, *) {
+				__lpEnsureNameFilter();
+				return (global.kag.__lpOrigDrawName incontextof global.kag)(arg0, *);
+			};
+		} catch (e) { }
+	}, 2);
+} catch (e) { }

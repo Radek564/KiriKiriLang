@@ -1,0 +1,24 @@
+# Per-game working data.  Written by `langpatch.py new`; never committed.
+configs/
+kits/
+*/extracted/
+*/scn_overrides/
+*/scripts/
+*/assets/
+*/assets_work/
+*/cache/
+*/build/
+cache/
+build/
+dist/
+
+# Generated files.
+*.xp3
+*.xlsx
+*.pkl
+*.log
+__pycache__/
+*.pyc
+
+# Local packaging leftovers.
+krkrz.zip

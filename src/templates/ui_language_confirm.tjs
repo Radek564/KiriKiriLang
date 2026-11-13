@@ -1,0 +1,92 @@
+
+// ==== interface language: the reference implementation ====================
+// A title whose own module offers SetUILanguageType.WithAskAndGoToTitle() asks
+// for a confirmation while the game is running, applies the language,
+// refreshes the menu marks and returns to the title, so the interface
+// graphics are exchanged.  A title whose engine only ships the plain setter
+// gets the same behaviour from this function.
+//
+// The decompiled reference (the engine's multilang.tjs):
+//
+//   if (!SetUILanguageType.enabled) return;
+//   if (SystemHook.currentState != "title")
+//       if (!confirm(GetSystemLangMessage("LangChangeConfirm", "..."))) return;
+//   SetUILanguageType(index);
+//   updateLangMenuCheck();
+//   kag.goToStart();
+//
+// The message and the caption of the dialog come from the language table
+// ("LangChangeConfirm" / "LangChangeConfirmCaption"), so the dialog is
+// written in the interface language like every other text.
+//
+// "setter" is a TJS2 reserved word (property accessors), so the local that
+// holds the function object is named uiSetter.  Older engines of the
+// Some engines end a statement at a newline; keep every statement on one
+// line.
+function __lpUiLanguageWithAsk(index) {
+	var uiSetter = false;
+	try { uiSetter = global.SetUILanguageType; } catch (e) { uiSetter = false; }
+	if (typeof uiSetter != "Object") return;
+	var uiEnabled = true;
+	try { uiEnabled = uiSetter.enabled; } catch (e) { uiEnabled = true; }
+	// A plain function has no ``enabled`` member; void means "always on".
+	if (uiEnabled === false) return;
+	// The engine calls the menu expression itself when the game starts, to
+	// apply the language that is stored in the save data.  That is not a
+	// user action: it must not ask anything and must not reload the title.
+	// The game is not stable while it boots, which is how the two are told
+	// apart.
+	var uiStable = true;
+	try { uiStable = !!global.kag.inStable; } catch (e) { uiStable = true; }
+	var uiAtTitle = false;
+	try { uiAtTitle = (global.SystemHook.currentState == "title"); } catch (e) { uiAtTitle = false; }
+	if (uiStable && !uiAtTitle) {
+		var uiAsk = "";
+		try { uiAsk = global.GetSystemLangMessage("LangChangeConfirm", ""); } catch (e) { uiAsk = ""; }
+		if (typeof uiAsk != "String" || uiAsk == "") {
+			try { uiAsk = global.GetSysLangText("LangChangeConfirm"); } catch (e) { uiAsk = ""; }
+		}
+		if (typeof uiAsk != "String" || uiAsk == "") {
+			uiAsk = "Return to the title screen to apply the language change. Continue?";
+		}
+		var uiCaption = "";
+		try { uiCaption = global.GetSystemLangMessage("LangChangeConfirmCaption", ""); } catch (e) { uiCaption = ""; }
+		if (typeof uiCaption != "String" || uiCaption == "") {
+			try { uiCaption = global.GetSysLangText("LangChangeConfirmCaption"); } catch (e) { uiCaption = ""; }
+		}
+		if (typeof uiCaption != "String" || uiCaption == "") {
+			uiCaption = "Language";
+		}
+		var uiOk = false;
+		try { uiOk = global.System.confirm(uiAsk, uiCaption); }
+		catch (e) {
+			try { uiOk = global.System.confirm(uiAsk); } catch (e2) { uiOk = true; }
+		}
+		if (!uiOk) return;
+	}
+	try { uiSetter(index); } catch (e) { }
+	// Persist the choice where the engine restores it on the next title load.
+	try { global.SystemConfig.uiLanguageType = int(index); } catch (e) { }
+	try { global.kag.scflags.uiLanguageType = int(index); } catch (e) { }
+	try { global.__lpUiLanguageChanged = true; } catch (e) { }
+	// The system save data (datasc.ksd) holds SystemConfig, and the title
+	// reload reads it back.  Persist the choice first, or the reload
+	// restores the language the game started with and the caption snaps
+	// back.  The config screen saves at the same point, which is why its
+	// path already worked.
+	if (uiStable) {
+		try { global.kag.saveSystemVariables(); } catch (e) { }
+	}
+	try { if (typeof global.updateLangMenuCheck == "Object") global.updateLangMenuCheck(); } catch (e) { }
+	// The window title is a language text: it follows the interface
+	// language.  The games ship a helper for it.
+	try { if (typeof global.__lpUpdateTitleCaption == "Object") global.__lpUpdateTitleCaption(); } catch (e) { }
+	try { if (typeof global.UpdateMultiLangTitleCaption == "Object") global.UpdateMultiLangTitleCaption(global.kag); } catch (e) { }
+	// Only a change the player asked for returns to the title screen.
+	if (!uiStable) return;
+	try { global.kag.goToStart(); } catch (e) { }
+	// The reload restores the window caption from the state that was
+	// saved when the game started, so the title bar would show the
+	// language from before the change.  Put the new caption back.
+	try { if (typeof global.__lpUpdateTitleCaption == "Object") global.__lpUpdateTitleCaption(); } catch (e) { }
+}
